@@ -1,190 +1,288 @@
-const Advertisement = require('../models/Advertisement');
+const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
 
-const UPLOAD_DIR = path.join(__dirname, '..', 'uploads', 'ads');
+const Advertisement = require('../models/Advertisement');
 
-// সব অনুমোদিত বিজ্ঞাপনের ধরন
-const VALID_ADVERTISEMENT_TYPES = ['image', 'video', 'animated'];
+// ==================================================
+// 1. CONFIGURATION
+// ==================================================
 
-// সব অনুমোদিত বিজ্ঞাপনের পজিশন
-const VALID_ADVERTISEMENT_POSITIONS = [
-  // পুরোনো পজিশন
+const UPLOAD_DIR = path.resolve(__dirname, '..', 'uploads', 'ads');
+
+const VALID_AD_TYPES = ['text', 'banner', 'video', 'popup'];
+
+const VALID_PLACEMENTS = [
   'navbar',
   'header',
   'breaking-news',
-
-  // Homepage
   'homepage-top',
   'homepage-middle',
   'homepage-bottom',
-
-  // Article
   'in-article',
   'article-bottom',
-
-  // অন্যান্য
   'sidebar',
   'footer',
   'popup',
+  'sticky-bottom',
 ];
 
-// অনুমোদিত Animation
-const VALID_ANIMATIONS = ['none', 'fade', 'slide', 'zoom'];
+const VALID_ANIMATIONS = [
+  'none',
+  'scroll-left',
+  'scroll-right',
+  'fade',
+  'slide',
+  'typewriter',
+  'zoom',
+  'bounce',
+];
 
-// --------------------------------------------------
-// বিজ্ঞাপনের ফাইল ডিলিট
-// --------------------------------------------------
+const VALID_VIDEO_HOSTS = [
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'youtu.be',
+  'www.youtu.be',
+];
 
-function deleteAdFile(fileUrl) {
-  if (!fileUrl || typeof fileUrl !== 'string') {
-    return;
-  }
+const VALID_SIZE_PRESETS = [
+  'auto',
+  'leaderboard',
+  'large-banner',
+  'medium-rectangle',
+  'square',
+  'mobile-banner',
+  'large-mobile-banner',
+  'custom',
+];
 
-  const filename = path.basename(fileUrl);
+const VALID_FIT_MODES = ['cover', 'contain', 'fill'];
 
-  // শুধু আমাদের তৈরি বিজ্ঞাপনের ফাইল ডিলিট হবে
-  if (
-    !/^ad-(?:video-)?[\w-]+\.(jpg|jpeg|png|webp|gif|mp4|webm)$/i.test(filename)
-  ) {
-    return;
-  }
+// Standard advertisement dimensions.
+// Auto mode uses a responsive layout in the frontend.
+const SIZE_PRESETS = {
+  auto: {
+    width: 728,
+    height: 90,
+  },
 
-  const filePath = path.join(UPLOAD_DIR, filename);
+  leaderboard: {
+    width: 728,
+    height: 90,
+  },
 
-  if (fs.existsSync(filePath)) {
-    try {
-      fs.unlinkSync(filePath);
-    } catch (error) {
-      console.error('Advertisement File Delete Error:', error);
-    }
-  }
-}
+  'large-banner': {
+    width: 970,
+    height: 250,
+  },
 
-// --------------------------------------------------
-// Boolean যাচাই
-// --------------------------------------------------
+  'medium-rectangle': {
+    width: 300,
+    height: 250,
+  },
 
-function parseBoolean(value, defaultValue = true) {
-  if (value === undefined) {
+  square: {
+    width: 300,
+    height: 300,
+  },
+
+  'mobile-banner': {
+    width: 320,
+    height: 50,
+  },
+
+  'large-mobile-banner': {
+    width: 320,
+    height: 100,
+  },
+
+  custom: {
+    width: 728,
+    height: 90,
+  },
+};
+
+// ==================================================
+// 2. HELPER: SEND ERROR RESPONSE
+// ==================================================
+
+const sendError = (res, statusCode, message) => {
+  return res.status(statusCode).json({
+    success: false,
+    message,
+  });
+};
+
+// ==================================================
+// 3. HELPER: VALIDATE MONGODB ID
+// ==================================================
+
+const isValidId = (id) => {
+  return (
+    typeof id === 'string' &&
+    mongoose.Types.ObjectId.isValid(id) &&
+    String(new mongoose.Types.ObjectId(id)) === id.toLowerCase()
+  );
+};
+
+// ==================================================
+// 4. HELPER: PARSE BOOLEAN
+// ==================================================
+
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') {
     return defaultValue;
   }
 
-  if (value === true || value === 'true') {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
     return true;
   }
 
-  if (value === false || value === 'false') {
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
     return false;
   }
 
-  return null;
-}
+  return defaultValue;
+};
 
-// --------------------------------------------------
-// বিজ্ঞাপনের URL যাচাই
-// --------------------------------------------------
+// ==================================================
+// 5. HELPER: VALIDATE TARGET URL
+// ==================================================
 
-function validateTargetUrl(value) {
-  if (typeof value !== 'string' || !value.trim()) {
+const validateTargetUrl = (url) => {
+  if (url === undefined || url === null || String(url).trim() === '') {
     return {
-      error: 'বিজ্ঞাপনের লিংক দিতে হবে',
+      valid: true,
+      value: '',
     };
   }
 
   try {
-    const url = new URL(value.trim());
+    const parsedUrl = new URL(String(url).trim());
 
-    if (!['http:', 'https:'].includes(url.protocol)) {
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       return {
-        error: 'শুধু HTTP অথবা HTTPS লিংক ব্যবহার করা যাবে',
+        valid: false,
+        message: 'Target URL must use HTTP or HTTPS.',
+      };
+    }
+
+    if (!parsedUrl.hostname) {
+      return {
+        valid: false,
+        message: 'Please provide a valid target URL.',
       };
     }
 
     return {
-      value: url.toString(),
+      valid: true,
+      value: parsedUrl.toString(),
     };
   } catch {
     return {
-      error: 'সঠিক বিজ্ঞাপনের URL দিতে হবে',
+      valid: false,
+      message: 'Please provide a valid target URL.',
     };
   }
-}
+};
 
-// --------------------------------------------------
-// তারিখ যাচাই
-// --------------------------------------------------
+// ==================================================
+// 6. HELPER: VALIDATE YOUTUBE URL
+// ==================================================
 
-function validateDates(startAt, endAt) {
-  const start =
-    startAt === undefined || startAt === null || startAt === ''
-      ? null
-      : new Date(startAt);
-
-  const end =
-    endAt === undefined || endAt === null || endAt === ''
-      ? null
-      : new Date(endAt);
-
-  if (start && Number.isNaN(start.getTime())) {
+const validateYouTubeUrl = (url) => {
+  if (url === undefined || url === null || String(url).trim() === '') {
     return {
-      error: 'শুরুর তারিখ সঠিক নয়',
+      valid: true,
+      value: '',
     };
   }
 
-  if (end && Number.isNaN(end.getTime())) {
+  try {
+    const parsedUrl = new URL(String(url).trim());
+
+    if (
+      !['http:', 'https:'].includes(parsedUrl.protocol) ||
+      !VALID_VIDEO_HOSTS.includes(parsedUrl.hostname.toLowerCase())
+    ) {
+      return {
+        valid: false,
+        message: 'Please provide a valid YouTube URL.',
+      };
+    }
+
     return {
-      error: 'শেষের তারিখ সঠিক নয়',
+      valid: true,
+      value: parsedUrl.toString(),
+    };
+  } catch {
+    return {
+      valid: false,
+      message: 'Please provide a valid YouTube URL.',
     };
   }
+};
 
-  if (start && end && start > end) {
+// ==================================================
+// 7. HELPER: VALIDATE ADVERTISEMENT DATES
+// ==================================================
+
+const validateDates = (startAt, endAt) => {
+  let startDate = null;
+  let endDate = null;
+
+  if (startAt !== undefined && startAt !== null && startAt !== '') {
+    startDate = new Date(startAt);
+
+    if (Number.isNaN(startDate.getTime())) {
+      return {
+        valid: false,
+        message: 'Invalid advertisement start date.',
+      };
+    }
+  }
+
+  if (endAt !== undefined && endAt !== null && endAt !== '') {
+    endDate = new Date(endAt);
+
+    if (Number.isNaN(endDate.getTime())) {
+      return {
+        valid: false,
+        message: 'Invalid advertisement end date.',
+      };
+    }
+  }
+
+  if (startDate && endDate && endDate <= startDate) {
     return {
-      error: 'শুরুর তারিখ শেষের তারিখের পরে হতে পারবে না',
+      valid: false,
+      message: 'End date must be later than start date.',
     };
   }
 
   return {
-    start,
-    end,
+    valid: true,
+    startAt: startDate,
+    endAt: endDate,
   };
-}
+};
 
-// --------------------------------------------------
-// অনুমোদিত ফিল্ড সংগ্রহ
-// --------------------------------------------------
+// ==================================================
+// 8. HELPER: ACTIVE ADVERTISEMENT DATE FILTER
+// ==================================================
 
-function getAllowedFields(body) {
-  const fields = [
-    'type',
-    'position',
-    'headline',
-    'description',
-    'price',
-    'offer',
-    'contact',
-    'backgroundColor',
-    'textColor',
-    'animation',
-    'durationSeconds',
-  ];
-
-  const result = {};
-
-  for (const field of fields) {
-    if (body[field] !== undefined) {
-      result[field] = body[field];
-    }
-  }
-
-  return result;
-}
-
-// --------------------------------------------------
-// Public API-তে বিজ্ঞাপন দেখানোর জন্য Date Filter
-// --------------------------------------------------
-
-function getActiveAdvertisementDateFilter(now) {
+const getActiveDateFilter = (now = new Date()) => {
   return {
     $and: [
       {
@@ -203,196 +301,537 @@ function getActiveAdvertisementDateFilter(now) {
       },
     ],
   };
-}
+};
 
-// --------------------------------------------------
-// নতুন বিজ্ঞাপন তৈরি — Admin
-// --------------------------------------------------
+// ==================================================
+// 9. HELPER: CHECK CURRENTLY ACTIVE ADVERTISEMENT
+// ==================================================
 
-exports.createAdvertisement = async (req, res) => {
-  let uploadedFileUrl = null;
+const isAdvertisementCurrentlyActive = (advertisement) => {
+  const now = new Date();
 
-  try {
-    const { title, targetUrl, isActive, startAt, endAt } = req.body;
+  if (!advertisement || !advertisement.isActive) {
+    return false;
+  }
 
-    const type = req.body.type || 'image';
+  if (advertisement.startAt && new Date(advertisement.startAt) > now) {
+    return false;
+  }
 
-    // বিজ্ঞাপনের নাম যাচাই
-    if (typeof title !== 'string' || !title.trim()) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
+  if (advertisement.endAt && new Date(advertisement.endAt) < now) {
+    return false;
+  }
 
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের নাম দিতে হবে',
-      });
+  return true;
+};
+
+// ==================================================
+// 10. HELPER: DELETE UPLOADED ADVERTISEMENT FILE
+// ==================================================
+
+const deleteAdFile = (fileUrl) => {
+  if (!fileUrl || typeof fileUrl !== 'string') {
+    return;
+  }
+
+  // Only accept files stored in our advertisement folder.
+  const filename = path.basename(fileUrl);
+
+  const allowedFilename =
+    /^ad-(?:video-)?[\w-]+\.(jpg|jpeg|png|webp|gif|mp4|webm)$/i;
+
+  if (!allowedFilename.test(filename)) {
+    return;
+  }
+
+  const resolvedUploadDir = path.resolve(UPLOAD_DIR);
+  const filePath = path.resolve(resolvedUploadDir, filename);
+
+  // Prevent deletion outside the advertisement folder.
+  if (path.dirname(filePath) !== resolvedUploadDir) {
+    return;
+  }
+
+  fs.unlink(filePath, (error) => {
+    if (error && error.code !== 'ENOENT') {
+      console.error('Advertisement file deletion failed:', error.message);
     }
+  });
+};
 
-    // বিজ্ঞাপনের ধরন যাচাই
-    if (!VALID_ADVERTISEMENT_TYPES.includes(type)) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
+// ==================================================
+// 11. HELPER: GET ALLOWED FIELDS
+// ==================================================
 
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের ধরন সঠিক নয়',
-      });
+const getAllowedFields = (body = {}) => {
+  const allowedFields = [
+    'title',
+    'adType',
+    'headline',
+    'description',
+    'price',
+    'offer',
+    'contact',
+    'youtubeUrl',
+    'targetUrl',
+    'placement',
+    'animationType',
+    'animationSpeed',
+    'durationSeconds',
+    'textColor',
+    'backgroundColor',
+    'buttonText',
+    'advertiserName',
+    'startAt',
+    'endAt',
+    'isActive',
+    'sizePreset',
+    'width',
+    'height',
+    'fitMode',
+  ];
+
+  const data = {};
+
+  allowedFields.forEach((field) => {
+    if (body[field] !== undefined) {
+      data[field] = body[field];
     }
+  });
 
-    // বিজ্ঞাপনের পজিশন
-    // নতুন বিজ্ঞাপনের ডিফল্ট পজিশন header
-    const position = req.body.position || 'header';
-
-    if (!VALID_ADVERTISEMENT_POSITIONS.includes(position)) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপন দেখানোর স্থান সঠিক নয়',
-      });
-    }
-
-    // বিজ্ঞাপনের লিংক যাচাই
-    const urlResult = validateTargetUrl(targetUrl);
-
-    if (urlResult.error) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: urlResult.error,
-      });
-    }
-
-    // তারিখ যাচাই
-    const dateResult = validateDates(startAt, endAt);
-
-    if (dateResult.error) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: dateResult.error,
-      });
-    }
-
-    // Image ও Video বিজ্ঞাপনের ফাইল বাধ্যতামূলক
-    if ((type === 'image' || type === 'video') && !req.file) {
-      return res.status(400).json({
-        success: false,
-        message:
-          type === 'video'
-            ? 'বিজ্ঞাপনের ভিডিও আপলোড করতে হবে'
-            : 'বিজ্ঞাপনের ছবি আপলোড করতে হবে',
-      });
-    }
-
-    // Active Status যাচাই
-    const activeValue = parseBoolean(isActive, true);
-
-    if (activeValue === null) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: 'isActive-এর মান true অথবা false হতে হবে',
-      });
-    }
-
-    // Animation যাচাই
-    if (
-      req.body.animation !== undefined &&
-      !VALID_ANIMATIONS.includes(req.body.animation)
-    ) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের Animation সঠিক নয়',
-      });
-    }
-
-    // আপলোড করা ফাইলের URL
-    const fileUrl = req.file ? `/uploads/ads/${req.file.filename}` : '';
-
-    uploadedFileUrl = fileUrl || null;
-
-    // অতিরিক্ত অনুমোদিত ফিল্ড
-    const extraFields = getAllowedFields(req.body);
-
-    // বিজ্ঞাপনের ডেটা
-    const advertisementData = {
-      ...extraFields,
-
-      title: title.trim(),
-      type,
-      targetUrl: urlResult.value,
-      position,
-
-      isActive: activeValue,
-
-      startAt: dateResult.start,
-      endAt: dateResult.end,
+  // Backward compatibility:
+  // image -> banner
+  // animated -> text
+  if (data.adType === undefined && body.type !== undefined) {
+    const oldTypeMap = {
+      image: 'banner',
+      animated: 'text',
+      video: 'video',
+      text: 'text',
+      banner: 'banner',
+      popup: 'popup',
     };
 
-    // Image অথবা Video সংরক্ষণ
+    data.adType = oldTypeMap[String(body.type).toLowerCase()] || body.type;
+  }
+
+  // Old position -> placement.
+  if (data.placement === undefined && body.position !== undefined) {
+    data.placement = body.position;
+  }
+
+  // Old animation -> animationType.
+  if (data.animationType === undefined && body.animation !== undefined) {
+    data.animationType = body.animation;
+  }
+
+  // Normalize string values.
+  if (typeof data.adType === 'string') {
+    data.adType = data.adType.trim().toLowerCase();
+  }
+
+  if (typeof data.placement === 'string') {
+    data.placement = data.placement.trim().toLowerCase();
+  }
+
+  if (typeof data.animationType === 'string') {
+    data.animationType = data.animationType.trim().toLowerCase();
+  }
+
+  if (typeof data.sizePreset === 'string') {
+    data.sizePreset = data.sizePreset.trim().toLowerCase();
+  }
+
+  if (typeof data.fitMode === 'string') {
+    data.fitMode = data.fitMode.trim().toLowerCase();
+  }
+
+  return data;
+};
+
+// ==================================================
+// 12. HELPER: APPLY SIZE PRESET
+// ==================================================
+
+const applyAdvertisementSize = (data, existingAdvertisement = null) => {
+  const sizePreset =
+    data.sizePreset || existingAdvertisement?.sizePreset || 'leaderboard';
+
+  // Validate the preset before applying dimensions.
+  if (!VALID_SIZE_PRESETS.includes(sizePreset)) {
+    return 'Invalid advertisement size preset.';
+  }
+
+  data.sizePreset = sizePreset;
+
+  // Custom size preserves explicitly supplied dimensions.
+  if (sizePreset === 'custom') {
+    if (data.width === undefined && existingAdvertisement) {
+      data.width = existingAdvertisement.width;
+    }
+
+    if (data.height === undefined && existingAdvertisement) {
+      data.height = existingAdvertisement.height;
+    }
+
+    if (data.width === undefined) {
+      data.width = SIZE_PRESETS.custom.width;
+    }
+
+    if (data.height === undefined) {
+      data.height = SIZE_PRESETS.custom.height;
+    }
+
+    return null;
+  }
+
+  const presetDimensions = SIZE_PRESETS[sizePreset];
+
+  // Only override dimensions when:
+  // 1. Creating a new advertisement, or
+  // 2. The preset has changed, or
+  // 3. Dimensions were explicitly supplied.
+  const presetChanged =
+    !existingAdvertisement ||
+    (data.sizePreset !== undefined &&
+      data.sizePreset !== existingAdvertisement.sizePreset);
+
+  if (presetChanged) {
+    if (data.width === undefined) {
+      data.width = presetDimensions.width;
+    }
+
+    if (data.height === undefined) {
+      data.height = presetDimensions.height;
+    }
+  }
+
+  return null;
+};
+
+// ==================================================
+// 13. HELPER: VALIDATE ADVERTISEMENT SIZE
+// ==================================================
+
+const validateAdvertisementSize = (data) => {
+  if (
+    data.sizePreset !== undefined &&
+    !VALID_SIZE_PRESETS.includes(data.sizePreset)
+  ) {
+    return 'Invalid advertisement size preset.';
+  }
+
+  if (data.fitMode !== undefined && !VALID_FIT_MODES.includes(data.fitMode)) {
+    return 'Invalid advertisement fit mode.';
+  }
+
+  for (const field of ['width', 'height']) {
+    if (data[field] !== undefined) {
+      // Empty string should not silently become zero.
+      if (data[field] === '' || data[field] === null) {
+        return `${field} must be an integer between 1 and 3000.`;
+      }
+
+      const value = Number(data[field]);
+
+      if (!Number.isInteger(value) || value < 1 || value > 3000) {
+        return `${field} must be an integer between 1 and 3000.`;
+      }
+
+      data[field] = value;
+    }
+  }
+
+  return null;
+};
+
+// ==================================================
+// 14. HELPER: VALIDATE ADVERTISEMENT FIELDS
+// ==================================================
+
+const validateAdvertisementFields = (data) => {
+  // Size validation must actually be called.
+  const sizeError = validateAdvertisementSize(data);
+
+  if (sizeError) {
+    return sizeError;
+  }
+
+  // Advertisement type.
+  if (data.adType !== undefined && !VALID_AD_TYPES.includes(data.adType)) {
+    return 'Invalid advertisement type.';
+  }
+
+  // Advertisement placement.
+  if (
+    data.placement !== undefined &&
+    !VALID_PLACEMENTS.includes(data.placement)
+  ) {
+    return 'Invalid advertisement placement.';
+  }
+
+  // Animation.
+  if (
+    data.animationType !== undefined &&
+    !VALID_ANIMATIONS.includes(data.animationType)
+  ) {
+    return 'Invalid animation type.';
+  }
+
+  // Animation speed.
+  if (data.animationSpeed !== undefined) {
+    if (data.animationSpeed === '') {
+      return 'Animation speed must be between 5 and 60.';
+    }
+
+    const speed = Number(data.animationSpeed);
+
+    if (!Number.isFinite(speed) || speed < 5 || speed > 60) {
+      return 'Animation speed must be between 5 and 60.';
+    }
+
+    data.animationSpeed = speed;
+  }
+
+  // Duration.
+  if (data.durationSeconds !== undefined) {
+    if (data.durationSeconds === '') {
+      return 'Duration must be between 3 and 60 seconds.';
+    }
+
+    const duration = Number(data.durationSeconds);
+
+    if (!Number.isFinite(duration) || duration < 3 || duration > 60) {
+      return 'Duration must be between 3 and 60 seconds.';
+    }
+
+    data.durationSeconds = duration;
+  }
+
+  // Price.
+  if (data.price !== undefined && data.price !== '') {
+    const price = Number(data.price);
+
+    if (!Number.isFinite(price) || price < 0) {
+      return 'Price must be a valid non-negative number.';
+    }
+
+    data.price = price;
+  }
+
+  // Active status.
+  if (data.isActive !== undefined) {
+    data.isActive = parseBoolean(data.isActive);
+  }
+
+  return null;
+};
+
+// ==================================================
+// 15. HELPER: VALIDATE ADVERTISEMENT CONTENT
+// ==================================================
+
+const validateAdvertisementContent = (data, existingAdvertisement = null) => {
+  const adType = data.adType || existingAdvertisement?.adType || 'banner';
+
+  const image =
+    data.image !== undefined ? data.image : existingAdvertisement?.image;
+
+  const video =
+    data.video !== undefined ? data.video : existingAdvertisement?.video;
+
+  const youtubeUrl =
+    data.youtubeUrl !== undefined
+      ? data.youtubeUrl
+      : existingAdvertisement?.youtubeUrl;
+
+  const headline =
+    data.headline !== undefined
+      ? data.headline
+      : existingAdvertisement?.headline;
+
+  const description =
+    data.description !== undefined
+      ? data.description
+      : existingAdvertisement?.description;
+
+  if (adType === 'banner' && !image) {
+    return 'Please upload an image for a banner advertisement.';
+  }
+
+  if (adType === 'video' && !video && !youtubeUrl) {
+    return 'Upload a video or provide a YouTube URL.';
+  }
+
+  if (
+    adType === 'text' &&
+    !String(headline || '').trim() &&
+    !String(description || '').trim()
+  ) {
+    return 'Please provide a headline or description.';
+  }
+
+  return null;
+};
+
+// ==================================================
+// 16. HELPER: VALIDATE UPLOADED FILE
+// ==================================================
+
+const getUploadedFileUrl = (req) => {
+  if (!req.file) {
+    return null;
+  }
+
+  return `/uploads/ads/${req.file.filename}`;
+};
+
+// ==================================================
+// 17. CREATE ADVERTISEMENT
+// POST /api/advertisements
+// POST /api/advertisements/video
+// ==================================================
+
+exports.createAdvertisement = async (req, res) => {
+  try {
+    const data = getAllowedFields(req.body);
+
+    // Required title.
+    if (!data.title || !String(data.title).trim()) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, 'Advertisement title is required.');
+    }
+
+    data.title = String(data.title).trim();
+
+    // Determine advertisement type.
+    data.adType =
+      data.adType || (req.file?.fieldname === 'video' ? 'video' : 'banner');
+
+    data.placement = data.placement || 'homepage-top';
+
+    data.animationType = data.animationType || 'none';
+
+    data.sizePreset = data.sizePreset || 'leaderboard';
+
+    data.fitMode = data.fitMode || 'contain';
+
+    // Apply preset dimensions.
+    const sizeError = applyAdvertisementSize(data);
+
+    if (sizeError) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, sizeError);
+    }
+
+    // Validate fields.
+    const fieldError = validateAdvertisementFields(data);
+
+    if (fieldError) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, fieldError);
+    }
+
+    // Validate target URL.
+    const targetUrlResult = validateTargetUrl(data.targetUrl);
+
+    if (!targetUrlResult.valid) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, targetUrlResult.message);
+    }
+
+    data.targetUrl = targetUrlResult.value;
+
+    // Validate YouTube URL.
+    const youtubeResult = validateYouTubeUrl(data.youtubeUrl);
+
+    if (!youtubeResult.valid) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, youtubeResult.message);
+    }
+
+    data.youtubeUrl = youtubeResult.value;
+
+    // Validate schedule.
+    const dateResult = validateDates(data.startAt, data.endAt);
+
+    if (!dateResult.valid) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, dateResult.message);
+    }
+
+    data.startAt = dateResult.startAt;
+    data.endAt = dateResult.endAt;
+
+    // Process uploaded image/video.
     if (req.file) {
-      if (type === 'video') {
-        advertisementData.video = fileUrl;
+      const fileUrl = getUploadedFileUrl(req);
+
+      if (req.file.fieldname === 'video') {
+        data.video = fileUrl;
       } else {
-        advertisementData.image = fileUrl;
+        data.image = fileUrl;
       }
     }
 
-    // Database-এ বিজ্ঞাপন তৈরি
-    const advertisement = await Advertisement.create(advertisementData);
+    // Validate required content.
+    const contentError = validateAdvertisementContent(data);
 
-    // সফলভাবে Database-এ সংরক্ষণ হয়েছে
-    uploadedFileUrl = null;
+    if (contentError) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, contentError);
+    }
+
+    // New advertisements are inactive by default.
+    data.isActive = parseBoolean(req.body.isActive, false);
+
+    const advertisement = await Advertisement.create(data);
 
     return res.status(201).json({
       success: true,
-      message: 'বিজ্ঞাপন তৈরি হয়েছে',
-      advertisement,
+      message: 'Advertisement created successfully.',
+      data: advertisement,
     });
   } catch (error) {
-    if (uploadedFileUrl) {
-      deleteAdFile(uploadedFileUrl);
+    console.error('Create advertisement error:', error);
+
+    if (req.file) {
+      deleteAdFile(getUploadedFileUrl(req));
     }
 
-    console.error('Create Advertisement Error:', error);
-
-    // Mongoose validation error
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের তথ্য সঠিক নয়',
-        errors: Object.values(error.errors).map((item) => item.message),
-      });
+    if (error.name === 'ValidationError' || error.name === 'CastError') {
+      return sendError(res, 400, error.message);
     }
 
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপন তৈরি করা যায়নি',
-    });
+    return sendError(res, 500, 'Failed to create advertisement.');
   }
 };
 
-// --------------------------------------------------
-// সব বিজ্ঞাপন দেখা — Admin
-// --------------------------------------------------
+// ==================================================
+// 18. GET ALL ADVERTISEMENTS
+// GET /api/advertisements
+// ==================================================
 
 exports.getAllAdvertisements = async (req, res) => {
   try {
@@ -403,41 +842,64 @@ exports.getAllAdvertisements = async (req, res) => {
     return res.status(200).json({
       success: true,
       count: advertisements.length,
-      advertisements,
+      data: advertisements,
     });
   } catch (error) {
-    console.error('Get Advertisements Error:', error);
+    console.error('Get all advertisements error:', error);
 
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপন লোড করা যায়নি',
-    });
+    return sendError(res, 500, 'Failed to fetch advertisements.');
   }
 };
 
-// --------------------------------------------------
-// নির্দিষ্ট পজিশনের চালু বিজ্ঞাপন — Public
-// --------------------------------------------------
+// ==================================================
+// 19. GET ACTIVE ADVERTISEMENTS BY PLACEMENT
+// GET /api/advertisements/position/:position
+// ==================================================
 
 exports.getActiveAdvertisementsByPosition = async (req, res) => {
   try {
     const { position } = req.params;
 
-    // পজিশন যাচাই
-    if (!VALID_ADVERTISEMENT_POSITIONS.includes(position)) {
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপন দেখানোর স্থান সঠিক নয়',
-      });
+    if (!VALID_PLACEMENTS.includes(position)) {
+      return sendError(res, 400, 'Invalid advertisement placement.');
     }
 
     const now = new Date();
 
-    // চালু এবং নির্ধারিত সময়ের মধ্যে থাকা বিজ্ঞাপন
     const advertisements = await Advertisement.find({
       isActive: true,
-      position,
-      ...getActiveAdvertisementDateFilter(now),
+      placement: position,
+      ...getActiveDateFilter(now),
+    }).sort({
+      createdAt: -1,
+    });
+
+    return res.status(200).json({
+      success: true,
+      placement: position,
+      count: advertisements.length,
+      data: advertisements,
+    });
+  } catch (error) {
+    console.error('Get advertisements by placement error:', error);
+
+    return sendError(res, 500, 'Failed to fetch advertisements.');
+  }
+};
+
+// ==================================================
+// 20. GET ACTIVE NAVBAR ADVERTISEMENT
+// GET /api/advertisements/navbar
+// ==================================================
+
+exports.getActiveNavbarAdvertisement = async (req, res) => {
+  try {
+    const now = new Date();
+
+    const advertisements = await Advertisement.find({
+      isActive: true,
+      placement: 'navbar',
+      ...getActiveDateFilter(now),
     }).sort({
       createdAt: -1,
     });
@@ -445,325 +907,235 @@ exports.getActiveAdvertisementsByPosition = async (req, res) => {
     return res.status(200).json({
       success: true,
       count: advertisements.length,
-      advertisements,
+      data: advertisements,
     });
   } catch (error) {
-    console.error('Get Position Advertisements Error:', error);
+    console.error('Get navbar advertisements error:', error);
 
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপন লোড করা যায়নি',
-    });
+    return sendError(res, 500, 'Failed to fetch navbar advertisements.');
   }
 };
 
-// --------------------------------------------------
-// পুরোনো Navbar API — Public
-// --------------------------------------------------
-
-exports.getActiveNavbarAdvertisement = async (req, res) => {
-  try {
-    const now = new Date();
-
-    const advertisement = await Advertisement.findOne({
-      isActive: true,
-      position: 'navbar',
-      ...getActiveAdvertisementDateFilter(now),
-    }).sort({
-      createdAt: -1,
-    });
-
-    return res.status(200).json({
-      success: true,
-      advertisement,
-    });
-  } catch (error) {
-    console.error('Get Active Navbar Advertisement Error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপন লোড করা যায়নি',
-    });
-  }
-};
-
-// --------------------------------------------------
-// বিজ্ঞাপন আপডেট — Admin
-// --------------------------------------------------
+// ==================================================
+// 21. UPDATE ADVERTISEMENT
+// PUT /api/advertisements/:id
+// ==================================================
 
 exports.updateAdvertisement = async (req, res) => {
-  let newFileUrl = null;
-
   try {
-    const advertisement = await Advertisement.findById(req.params.id);
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, 'Invalid advertisement ID.');
+    }
+
+    const advertisement = await Advertisement.findById(id);
 
     if (!advertisement) {
       if (req.file) {
-        deleteAdFile(req.file.filename);
+        deleteAdFile(getUploadedFileUrl(req));
       }
 
-      return res.status(404).json({
-        success: false,
-        message: 'বিজ্ঞাপন পাওয়া যায়নি',
-      });
+      return sendError(res, 404, 'Advertisement not found.');
     }
 
-    const { title, targetUrl, isActive, startAt, endAt } = req.body;
+    const data = getAllowedFields(req.body);
 
-    // বিজ্ঞাপনের নাম আপডেট
-    if (title !== undefined) {
-      if (typeof title !== 'string' || !title.trim()) {
+    // Validate title if supplied.
+    if (data.title !== undefined) {
+      if (!String(data.title).trim()) {
         if (req.file) {
-          deleteAdFile(req.file.filename);
+          deleteAdFile(getUploadedFileUrl(req));
         }
 
-        return res.status(400).json({
-          success: false,
-          message: 'বিজ্ঞাপনের নাম ফাঁকা রাখা যাবে না',
-        });
+        return sendError(res, 400, 'Advertisement title cannot be empty.');
       }
 
-      advertisement.title = title.trim();
+      data.title = String(data.title).trim();
     }
 
-    // বিজ্ঞাপনের লিংক আপডেট
-    if (targetUrl !== undefined) {
-      const urlResult = validateTargetUrl(targetUrl);
+    // Apply dimensions only when appropriate.
+    const sizeError = applyAdvertisementSize(data, advertisement);
 
-      if (urlResult.error) {
+    if (sizeError) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, sizeError);
+    }
+
+    // Validate fields.
+    const fieldError = validateAdvertisementFields(data);
+
+    if (fieldError) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, fieldError);
+    }
+
+    // Validate target URL only when supplied.
+    if (data.targetUrl !== undefined) {
+      const targetUrlResult = validateTargetUrl(data.targetUrl);
+
+      if (!targetUrlResult.valid) {
         if (req.file) {
-          deleteAdFile(req.file.filename);
+          deleteAdFile(getUploadedFileUrl(req));
         }
 
-        return res.status(400).json({
-          success: false,
-          message: urlResult.error,
-        });
+        return sendError(res, 400, targetUrlResult.message);
       }
 
-      advertisement.targetUrl = urlResult.value;
+      data.targetUrl = targetUrlResult.value;
     }
 
-    // বিজ্ঞাপনের Active Status আপডেট
-    if (isActive !== undefined) {
-      const activeValue = parseBoolean(isActive, null);
+    // Validate YouTube URL only when supplied.
+    if (data.youtubeUrl !== undefined) {
+      const youtubeResult = validateYouTubeUrl(data.youtubeUrl);
 
-      if (activeValue === null) {
+      if (!youtubeResult.valid) {
         if (req.file) {
-          deleteAdFile(req.file.filename);
+          deleteAdFile(getUploadedFileUrl(req));
         }
 
-        return res.status(400).json({
-          success: false,
-          message: 'isActive-এর মান true অথবা false হতে হবে',
-        });
+        return sendError(res, 400, youtubeResult.message);
       }
 
-      advertisement.isActive = activeValue;
+      data.youtubeUrl = youtubeResult.value;
     }
 
-    // নতুন Start Date
-    if (startAt !== undefined) {
-      advertisement.startAt = startAt ? new Date(startAt) : null;
+    // Validate dates against the resulting document.
+    const nextStartAt =
+      data.startAt !== undefined ? data.startAt : advertisement.startAt;
+
+    const nextEndAt =
+      data.endAt !== undefined ? data.endAt : advertisement.endAt;
+
+    const dateResult = validateDates(nextStartAt, nextEndAt);
+
+    if (!dateResult.valid) {
+      if (req.file) {
+        deleteAdFile(getUploadedFileUrl(req));
+      }
+
+      return sendError(res, 400, dateResult.message);
     }
 
-    // নতুন End Date
-    if (endAt !== undefined) {
-      advertisement.endAt = endAt ? new Date(endAt) : null;
+    if (data.startAt !== undefined) {
+      data.startAt = dateResult.startAt;
     }
 
-    // তারিখ যাচাই
-    const dateResult = validateDates(
-      advertisement.startAt,
-      advertisement.endAt
+    if (data.endAt !== undefined) {
+      data.endAt = dateResult.endAt;
+    }
+
+    // Preserve old files for cleanup after successful save.
+    const oldImage = advertisement.image;
+    const oldVideo = advertisement.video;
+
+    // Process new upload.
+    if (req.file) {
+      const uploadType = req.headers['x-ad-upload-type'];
+
+      if (uploadType === 'video' || req.file.fieldname === 'video') {
+        data.video = getUploadedFileUrl(req);
+      } else {
+        data.image = getUploadedFileUrl(req);
+      }
+    }
+
+    // Build resulting data for content validation.
+    const resultingData = {
+      adType: data.adType !== undefined ? data.adType : advertisement.adType,
+
+      image: data.image !== undefined ? data.image : advertisement.image,
+
+      video: data.video !== undefined ? data.video : advertisement.video,
+
+      youtubeUrl:
+        data.youtubeUrl !== undefined
+          ? data.youtubeUrl
+          : advertisement.youtubeUrl,
+
+      headline:
+        data.headline !== undefined ? data.headline : advertisement.headline,
+
+      description:
+        data.description !== undefined
+          ? data.description
+          : advertisement.description,
+    };
+
+    const contentError = validateAdvertisementContent(
+      resultingData,
+      advertisement
     );
 
-    if (dateResult.error) {
+    if (contentError) {
       if (req.file) {
-        deleteAdFile(req.file.filename);
+        deleteAdFile(getUploadedFileUrl(req));
       }
 
-      return res.status(400).json({
-        success: false,
-        message: dateResult.error,
-      });
+      return sendError(res, 400, contentError);
     }
 
-    // অতিরিক্ত ফিল্ড সংগ্রহ
-    const allowedFields = getAllowedFields(req.body);
+    // Update document.
+    Object.assign(advertisement, data);
 
-    // Position আপডেটের আগে যাচাই
-    if (
-      allowedFields.position !== undefined &&
-      !VALID_ADVERTISEMENT_POSITIONS.includes(allowedFields.position)
-    ) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
+    await advertisement.save();
 
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপন দেখানোর স্থান সঠিক নয়',
-      });
+    // Delete old files only after a successful save.
+    if (advertisement.image && oldImage && advertisement.image !== oldImage) {
+      deleteAdFile(oldImage);
     }
 
-    // Type আপডেটের আগে যাচাই
-    if (
-      allowedFields.type !== undefined &&
-      !VALID_ADVERTISEMENT_TYPES.includes(allowedFields.type)
-    ) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের ধরন সঠিক নয়',
-      });
+    if (advertisement.video && oldVideo && advertisement.video !== oldVideo) {
+      deleteAdFile(oldVideo);
     }
 
-    // Animation আপডেটের আগে যাচাই
-    if (
-      allowedFields.animation !== undefined &&
-      !VALID_ANIMATIONS.includes(allowedFields.animation)
-    ) {
-      if (req.file) {
-        deleteAdFile(req.file.filename);
-      }
+    return res.status(200).json({
+      success: true,
+      message: 'Advertisement updated successfully.',
+      data: advertisement,
+    });
+  } catch (error) {
+    console.error('Update advertisement error:', error);
 
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের Animation সঠিক নয়',
-      });
-    }
-
-    // অনুমোদিত ফিল্ড আপডেট
-    for (const [key, value] of Object.entries(allowedFields)) {
-      advertisement[key] = value;
-    }
-
-    // নতুন Image অথবা Video আপলোড হলে
     if (req.file) {
-      newFileUrl = `/uploads/ads/${req.file.filename}`;
-
-      const uploadType = req.body.type || advertisement.type || 'image';
-
-      if (!VALID_ADVERTISEMENT_TYPES.includes(uploadType)) {
-        deleteAdFile(newFileUrl);
-        newFileUrl = null;
-
-        return res.status(400).json({
-          success: false,
-          message: 'বিজ্ঞাপনের ধরন সঠিক নয়',
-        });
-      }
-
-      if (uploadType === 'video') {
-        const oldFile = advertisement.video;
-
-        advertisement.video = newFileUrl;
-
-        await advertisement.save();
-
-        // নতুন ফাইল সংরক্ষণের পর পুরোনো ফাইল ডিলিট
-        if (oldFile && oldFile !== newFileUrl) {
-          deleteAdFile(oldFile);
-        }
-      } else {
-        const oldFile = advertisement.image;
-
-        advertisement.image = newFileUrl;
-
-        await advertisement.save();
-
-        // নতুন ফাইল সংরক্ষণের পর পুরোনো ফাইল ডিলিট
-        if (oldFile && oldFile !== newFileUrl) {
-          deleteAdFile(oldFile);
-        }
-      }
-
-      newFileUrl = null;
-    } else {
-      await advertisement.save();
+      deleteAdFile(getUploadedFileUrl(req));
     }
 
-    return res.status(200).json({
-      success: true,
-      message: 'বিজ্ঞাপন আপডেট হয়েছে',
-      advertisement,
-    });
-  } catch (error) {
-    if (newFileUrl) {
-      deleteAdFile(newFileUrl);
+    if (error.name === 'ValidationError' || error.name === 'CastError') {
+      return sendError(res, 400, error.message);
     }
 
-    console.error('Update Advertisement Error:', error);
-
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        success: false,
-        message: 'বিজ্ঞাপনের তথ্য সঠিক নয়',
-        errors: Object.values(error.errors).map((item) => item.message),
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপন আপডেট করা যায়নি',
-    });
+    return sendError(res, 500, 'Failed to update advertisement.');
   }
 };
 
-// --------------------------------------------------
-// বিজ্ঞাপন ডিলিট — Admin
-// --------------------------------------------------
-
-exports.deleteAdvertisement = async (req, res) => {
-  try {
-    const advertisement = await Advertisement.findById(req.params.id);
-
-    if (!advertisement) {
-      return res.status(404).json({
-        success: false,
-        message: 'বিজ্ঞাপন পাওয়া যায়নি',
-      });
-    }
-
-    await Advertisement.deleteOne({
-      _id: advertisement._id,
-    });
-
-    // বিজ্ঞাপনের Image ও Video ফাইল ডিলিট
-    deleteAdFile(advertisement.image);
-    deleteAdFile(advertisement.video);
-
-    return res.status(200).json({
-      success: true,
-      message: 'বিজ্ঞাপন ডিলিট হয়েছে',
-    });
-  } catch (error) {
-    console.error('Delete Advertisement Error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপন ডিলিট করা যায়নি',
-    });
-  }
-};
-
-// --------------------------------------------------
-// বিজ্ঞাপন চালু অথবা বন্ধ — Admin
-// --------------------------------------------------
+// ==================================================
+// 22. TOGGLE ADVERTISEMENT ACTIVE STATUS
+// PATCH /api/advertisements/:id/toggle
+// ==================================================
 
 exports.toggleAdvertisement = async (req, res) => {
   try {
-    const advertisement = await Advertisement.findById(req.params.id);
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return sendError(res, 400, 'Invalid advertisement ID.');
+    }
+
+    const advertisement = await Advertisement.findById(id);
 
     if (!advertisement) {
-      return res.status(404).json({
-        success: false,
-        message: 'বিজ্ঞাপন পাওয়া যায়নি',
-      });
+      return sendError(res, 404, 'Advertisement not found.');
     }
 
     advertisement.isActive = !advertisement.isActive;
@@ -772,17 +1144,150 @@ exports.toggleAdvertisement = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+
       message: advertisement.isActive
-        ? 'বিজ্ঞাপন চালু হয়েছে'
-        : 'বিজ্ঞাপন বন্ধ হয়েছে',
-      advertisement,
+        ? 'Advertisement activated successfully.'
+        : 'Advertisement deactivated successfully.',
+
+      data: advertisement,
     });
   } catch (error) {
-    console.error('Toggle Advertisement Error:', error);
+    console.error('Toggle advertisement error:', error);
 
-    return res.status(500).json({
-      success: false,
-      message: 'বিজ্ঞাপনের অবস্থা পরিবর্তন করা যায়নি',
+    return sendError(res, 500, 'Failed to toggle advertisement status.');
+  }
+};
+
+// ==================================================
+// 23. DELETE ADVERTISEMENT
+// DELETE /api/advertisements/:id
+// ==================================================
+
+exports.deleteAdvertisement = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return sendError(res, 400, 'Invalid advertisement ID.');
+    }
+
+    const advertisement = await Advertisement.findById(id);
+
+    if (!advertisement) {
+      return sendError(res, 404, 'Advertisement not found.');
+    }
+
+    const imageUrl = advertisement.image;
+    const videoUrl = advertisement.video;
+
+    // Delete database document first.
+    await advertisement.deleteOne();
+
+    // Remove uploaded files after successful deletion.
+    deleteAdFile(imageUrl);
+    deleteAdFile(videoUrl);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Advertisement deleted successfully.',
     });
+  } catch (error) {
+    console.error('Delete advertisement error:', error);
+
+    return sendError(res, 500, 'Failed to delete advertisement.');
+  }
+};
+
+// ==================================================
+// 24. TRACK ADVERTISEMENT CLICK
+// POST /api/advertisements/:id/click
+// ==================================================
+
+exports.trackAdvertisementClick = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return sendError(res, 400, 'Invalid advertisement ID.');
+    }
+
+    const now = new Date();
+
+    const advertisement = await Advertisement.findOneAndUpdate(
+      {
+        _id: id,
+        isActive: true,
+        ...getActiveDateFilter(now),
+      },
+      {
+        $inc: {
+          clickCount: 1,
+        },
+      },
+      {
+        new: true,
+      }
+    );
+
+    if (!advertisement) {
+      return sendError(res, 404, 'Active advertisement not found.');
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Advertisement click tracked.',
+      clickCount: advertisement.clickCount,
+    });
+  } catch (error) {
+    console.error('Track advertisement click error:', error);
+
+    return sendError(res, 500, 'Failed to track advertisement click.');
+  }
+};
+
+// ==================================================
+// 25. TRACK ADVERTISEMENT IMPRESSION
+// POST /api/advertisements/:id/impression
+// ==================================================
+
+exports.trackAdvertisementImpression = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return sendError(res, 400, 'Invalid advertisement ID.');
+    }
+
+    const now = new Date();
+
+    const advertisement = await Advertisement.findOneAndUpdate(
+      {
+        _id: id,
+        isActive: true,
+        ...getActiveDateFilter(now),
+      },
+      {
+        $inc: {
+          impressionCount: 1,
+        },
+      },
+      {
+        new: true,
+      }
+    );
+
+    if (!advertisement) {
+      return sendError(res, 404, 'Active advertisement not found.');
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Advertisement impression tracked.',
+      impressionCount: advertisement.impressionCount,
+    });
+  } catch (error) {
+    console.error('Track advertisement impression error:', error);
+
+    return sendError(res, 500, 'Failed to track advertisement impression.');
   }
 };

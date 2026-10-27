@@ -1,4 +1,5 @@
 const express = require('express');
+
 const router = express.Router();
 
 const {
@@ -9,33 +10,57 @@ const {
   updateAdvertisement,
   deleteAdvertisement,
   toggleAdvertisement,
+  trackAdvertisementClick,
+  trackAdvertisementImpression,
 } = require('../controllers/advertisementController');
 
-const adUpload = require('../middleware/adUploadMiddleware');
-const adVideoUpload = require('../middleware/adVideoUploadMiddleware');
+const {
+  uploadImage,
+  uploadVideo,
+} = require('../middleware/adUploadMiddleware');
+
 const { protectAdmin } = require('../middleware/authMiddleware');
 
-// Public API: Navbar বিজ্ঞাপন
+// ========================================
+// Public Advertisement Routes
+// ========================================
+
+// Navbar advertisements
 router.get('/navbar', getActiveNavbarAdvertisement);
 
-// Public API: নির্দিষ্ট Placement-এর বিজ্ঞাপন
+// Advertisements by placement
 router.get('/position/:position', getActiveAdvertisementsByPosition);
 
-// Admin API: সব বিজ্ঞাপন দেখা
+// Track advertisement click
+router.post('/:id/click', trackAdvertisementClick);
+
+// Track advertisement impression
+router.post('/:id/impression', trackAdvertisementImpression);
+
+// ========================================
+// Admin Advertisement Routes
+// ========================================
+
+// Get all advertisements
 router.get('/', protectAdmin, getAllAdvertisements);
 
-// Admin API: ছবি দিয়ে বিজ্ঞাপন তৈরি
-router.post('/', protectAdmin, adUpload.single('image'), createAdvertisement);
-
-// Admin API: ভিডিও দিয়ে বিজ্ঞাপন তৈরি
+// Create image/banner/text/popup advertisement
 router.post(
-  '/video',
+  '/',
   protectAdmin,
-  adVideoUpload.single('video'),
+  uploadImage.single('image'),
   createAdvertisement
 );
 
-// Admin API: বিজ্ঞাপন আপডেট
+// Create video advertisement
+router.post(
+  '/video',
+  protectAdmin,
+  uploadVideo.single('video'),
+  createAdvertisement
+);
+
+// Update advertisement
 router.put(
   '/:id',
   protectAdmin,
@@ -43,18 +68,18 @@ router.put(
     const uploadType = req.headers['x-ad-upload-type'];
 
     if (uploadType === 'video') {
-      return adVideoUpload.single('video')(req, res, next);
+      return uploadVideo.single('video')(req, res, next);
     }
 
-    return adUpload.single('image')(req, res, next);
+    return uploadImage.single('image')(req, res, next);
   },
   updateAdvertisement
 );
 
-// Admin API: বিজ্ঞাপন চালু/বন্ধ
+// Activate/deactivate advertisement
 router.patch('/:id/toggle', protectAdmin, toggleAdvertisement);
 
-// Admin API: বিজ্ঞাপন ডিলিট
+// Delete advertisement
 router.delete('/:id', protectAdmin, deleteAdvertisement);
 
 module.exports = router;

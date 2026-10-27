@@ -2,32 +2,72 @@ const express = require('express');
 
 const router = express.Router();
 
+// Controllers
 const {
   getPublishedNews,
   getNewsById,
   getAllNewsForAdmin,
   getFeaturedNews,
   getNewsByCategory,
-
+  getNewsByLocation,
   searchNews,
   createNews,
   updateNews,
   deleteNews,
+  uploadNewsImage,
 } = require('../controllers/newsController');
 
-// uploads
+// Middleware
 const upload = require('../middleware/uploadMiddleware');
-const { uploadNewsImage } = require('../controllers/newsController');
-
-
 const { protectAdmin } = require('../middleware/authMiddleware');
 
-// Admin API: নতুন সংবাদ তৈরি
+// ========================================
+// PUBLIC API ROUTES
+// ========================================
+
+// Featured News
+// GET /api/news/featured
+console.log('getFeaturedNews:', typeof getFeaturedNews);
+
+router.get('/featured', getFeaturedNews);
+
+// Search News
+// GET /api/news/search?q=বাংলাদেশ
+router.get('/search', searchNews);
+
+// Location-based News
+// GET /api/news/location?division=চট্টগ্রাম
+// GET /api/news/location?district=কুমিল্লা
+// GET /api/news/location?upazila=দাউদকান্দি
+router.get('/location', getNewsByLocation);
+
+// Category-based News
+// GET /api/news/category/national
+// GET /api/news/category/sports
+router.get('/category/:category', getNewsByCategory);
+
+// All Published News
+// GET /api/news?page=1&limit=10
+router.get('/', getPublishedNews);
+
+// Single Published News
+// GET /api/news/:id
+router.get('/:id', getNewsById);
+
+// ========================================
+// ADMIN API ROUTES
+// ========================================
+
+// Get All News for Admin
+// GET /api/news/admin/all
+router.get('/admin/all', protectAdmin, getAllNewsForAdmin);
+
+// Create News
+// POST /api/news
 router.post('/', protectAdmin, createNews);
 
-
-// imageUploads
-
+// Upload News Image
+// POST /api/news/upload-image
 router.post(
   '/upload-image',
   protectAdmin,
@@ -35,25 +75,12 @@ router.post(
   uploadNewsImage
 );
 
-// Admin API: সংবাদ সম্পাদনা
+// Update News
+// PUT /api/news/:id
 router.put('/:id', protectAdmin, updateNews);
 
-// Admin API: সংবাদ মুছে ফেলা
+// Delete News
+// DELETE /api/news/:id
 router.delete('/:id', protectAdmin, deleteNews);
-
-// Public API: প্রকাশিত সংবাদ
-router.get('/', getPublishedNews);
-
-router.get('/featured', getFeaturedNews);
-
-// Admin API: সব সংবাদ দেখার জন্য
-router.get('/admin/all', protectAdmin, getAllNewsForAdmin);
-
-router.get('/search', searchNews);
-
-router.get('/category/:category', getNewsByCategory);
-
-// Public API: একটি নির্দিষ্ট সংবাদ
-router.get('/:id', getNewsById);
 
 module.exports = router;

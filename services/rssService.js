@@ -3,9 +3,8 @@ const Parser = require('rss-parser');
 const parser = new Parser({
   timeout: 15000,
   headers: {
-    'User-Agent': 'NewsPortalRSSReader/1.0',
+    'User-Agent': 'NewsTodayRSSReader/1.0',
   },
-
   customFields: {
     item: [
       ['media:thumbnail', 'mediaThumbnail'],
@@ -15,8 +14,49 @@ const parser = new Parser({
   },
 });
 
-// আন্তর্জাতিক সংবাদসূত্র
-const RSS_FEEDS = [
+// ========================================
+// ১. কুমিল্লার স্থানীয় সংবাদসূত্র
+// ========================================
+// কোনো স্থানীয় Feed ব্যবহারের আগে তার প্রকৃত RSS URL যাচাই করুন।
+// নিচে যাচাই করা Feed URL বসাতে হবে।
+
+const COMILLA_RSS_FEEDS = [
+  // উদাহরণ:
+  // {
+  //   name: 'Local News Source',
+  //   url: 'এখানে-যাচাই-করা-RSS-URL',
+  // },
+];
+
+// ========================================
+// ২. বাংলাদেশের জাতীয় সংবাদসূত্র
+// ========================================
+
+const NATIONAL_RSS_FEEDS = [
+  {
+    name: 'The Daily Star',
+    url: 'https://www.thedailystar.net/frontpage/rss.xml',
+  },
+  {
+    name: 'bdnews24.com',
+    url: 'https://bdnews24.com/?widgetName=rssfeed&widgetId=1150&getXmlFeed=true',
+  },
+  {
+    name: 'BanglaNews24',
+    url: 'https://www.banglanews24.com/rss/rss.xml',
+  },
+  {
+    name: 'Jago News 24',
+    url: 'https://www.jagonews24.com/rss/rss.xml',
+  },
+];
+
+// ========================================
+// ৩. আন্তর্জাতিক সংবাদসূত্র
+// শুধু BBC World ও Al Jazeera
+// ========================================
+
+const INTERNATIONAL_RSS_FEEDS = [
   {
     name: 'BBC World',
     url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
@@ -25,23 +65,14 @@ const RSS_FEEDS = [
     name: 'Al Jazeera',
     url: 'https://www.aljazeera.com/xml/rss/all.xml',
   },
-  {
-    name: 'DW World',
-    url: 'https://rss.dw.com/rdf/rss-en-world',
-  },
-  {
-    name: 'France 24',
-    url: 'https://www.france24.com/en/rss',
-  },
-  {
-    name: 'The Guardian World',
-    url: 'https://www.theguardian.com/world/rss',
-  },
 ];
 
-// RSS আইটেম থেকে ছবির URL বের করা
+// ========================================
+// ৪. ছবির URL সংগ্রহ
+// ========================================
+
 function extractImage(item) {
-  // ১. Enclosure থেকে ছবি খোঁজা
+  // Enclosure
   if (
     item.enclosure?.url &&
     (!item.enclosure.type || item.enclosure.type.startsWith('image/'))
@@ -49,7 +80,7 @@ function extractImage(item) {
     return item.enclosure.url;
   }
 
-  // ২. Media thumbnail
+  // Media thumbnail
   const thumbnail = item.mediaThumbnail;
 
   if (Array.isArray(thumbnail)) {
@@ -62,8 +93,9 @@ function extractImage(item) {
   if (thumbnail?.$?.url) return thumbnail.$.url;
   if (thumbnail?.url) return thumbnail.url;
 
-  // ৩. Media content
+  // Media content
   const mediaContent = item.mediaContent;
+
   const mediaList = Array.isArray(mediaContent)
     ? mediaContent
     : mediaContent
@@ -78,37 +110,33 @@ function extractImage(item) {
     if (media?.url) return media.url;
   }
 
-  // ৪. বিভিন্ন RSS ফিল্ডে থাকা HTML থেকে ছবি খোঁজা
+  // HTML-এর ভিতর ছবি
   const htmlFields = [
     item['content:encoded'],
     item.content,
-    item['content:encodedSnippet'],
     item.description,
     item.summary,
   ];
 
-  for (const html of htmlFields) {
-    if (typeof html !== 'string' || !html) continue;
+  const patterns = [
+    /<img[^>]+src=["']([^"']+)["']/i,
+    /<img[^>]+data-src=["']([^"']+)["']/i,
+    /<img[^>]+srcset=["']([^"'\s,]+)/i,
+    /<img[^>]+data-original=["']([^"']+)["']/i,
+  ];
 
-    // img src, data-src, srcset বা lazy-loading image
-    const patterns = [
-      /<img[^>]+src=["']([^"']+)["']/i,
-      /<img[^>]+data-src=["']([^"']+)["']/i,
-      /<img[^>]+srcset=["']([^"'\s,]+)/i,
-      /<img[^>]+data-original=["']([^"']+)["']/i,
-    ];
+  for (const html of htmlFields) {
+    if (typeof html !== 'string') continue;
 
     for (const pattern of patterns) {
       const match = html.match(pattern);
 
-      if (match?.[1]) {
-        return match[1];
-      }
+      if (match?.[1]) return match[1];
     }
   }
 
-  // ৫. অন্য সম্ভাব্য image ফিল্ড
-  const possibleImageFields = [
+  // অন্যান্য image field
+  const possibleImages = [
     item.image?.url,
     item.image?.link,
     item.image?.href,
@@ -117,7 +145,7 @@ function extractImage(item) {
     item.thumbnail,
   ];
 
-  for (const image of possibleImageFields) {
+  for (const image of possibleImages) {
     if (typeof image === 'string' && /^https?:\/\//i.test(image)) {
       return image;
     }
@@ -126,22 +154,23 @@ function extractImage(item) {
   return '';
 }
 
-// মূল সংবাদ প্রতিবেদনের পৃষ্ঠা থেকে Open Graph ছবি খোঁজা
+// ========================================
+// ৫. মূল প্রতিবেদন থেকে Open Graph ছবি
+// ========================================
+
 async function fetchArticleImage(articleUrl) {
   if (!articleUrl) return '';
 
   try {
     const response = await fetch(articleUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 NewsPortal/1.0',
+        'User-Agent': 'Mozilla/5.0 NewsToday/1.0',
         Accept: 'text/html',
       },
       signal: AbortSignal.timeout(10000),
     });
 
-    if (!response.ok) {
-      return '';
-    }
+    if (!response.ok) return '';
 
     const html = await response.text();
 
@@ -162,63 +191,155 @@ async function fetchArticleImage(articleUrl) {
 
     return '';
   } catch (error) {
-    console.log('মূল প্রতিবেদন থেকে ছবি পাওয়া যায়নি:', error.message);
+    console.log('প্রতিবেদন থেকে ছবি পাওয়া যায়নি:', error.message);
 
     return '';
   }
 }
 
-// RSS Feed থেকে আন্তর্জাতিক সংবাদ সংগ্রহ
-async function fetchInternationalNews() {
-  const allNews = [];
+// ========================================
+// ৬. শিরোনাম ও সারাংশ পরিষ্কার করা
+// ========================================
 
-  for (const feed of RSS_FEEDS) {
-    try {
-      console.log(`সংবাদ সংগ্রহ করা হচ্ছে: ${feed.name}`);
+function cleanText(value) {
+  if (typeof value !== 'string') return '';
 
-      const result = await parser.parseURL(feed.url);
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-      const newsItems = [];
+// ========================================
+// ৭. একটি Feed থেকে সংবাদ সংগ্রহ
+// ========================================
 
-      for (const item of result.items || []) {
-        const articleUrl = item.link || '';
+async function fetchFeedNews(feed, category) {
+  try {
+    console.log(`সংবাদ সংগ্রহ হচ্ছে: ${feed.name}`);
 
-        // প্রথমে RSS থেকে ছবির URL সংগ্রহ করব
-        let image = extractImage(item);
+    const result = await parser.parseURL(feed.url);
 
-        // RSS-এ ছবি না থাকলে শুধু Al Jazeera ও DW-এর মূল পৃষ্ঠা পরীক্ষা করব
-        if (
-          !image &&
-          articleUrl &&
-          ['Al Jazeera', 'DW World'].includes(feed.name)
-        ) {
-          image = await fetchArticleImage(articleUrl);
-        }
+    const allItems = [];
 
-        newsItems.push({
-          source: feed.name,
-          title: item.title?.trim() || '',
-          summary: item.contentSnippet?.trim() || item.summary?.trim() || '',
-          link: articleUrl,
-          image,
-          publishedAt: item.isoDate ? new Date(item.isoDate) : null,
-        });
+    for (const item of result.items || []) {
+      const title = cleanText(item.title);
+      const sourceUrl = item.link?.trim() || '';
+
+      if (!title || !sourceUrl) continue;
+
+      const summary = cleanText(
+        item.contentSnippet ||
+          item.summary ||
+          item.content ||
+          item.description ||
+          ''
+      );
+
+      let image = extractImage(item);
+
+      // ছবি না থাকলে মূল প্রতিবেদন পরীক্ষা
+      if (!image) {
+        image = await fetchArticleImage(sourceUrl);
       }
 
-      allNews.push(...newsItems.filter((item) => item.title && item.link));
+      const publishedDate = item.isoDate ? new Date(item.isoDate) : null;
 
-      const imageCount = newsItems.filter((item) => item.image).length;
+      allItems.push({
+        source: feed.name,
+        title,
+        summary,
+        sourceUrl,
+        image,
+        sourcePublishedAt:
+          publishedDate && !Number.isNaN(publishedDate.getTime())
+            ? publishedDate
+            : null,
 
-      console.log(`${feed.name} থেকে ${newsItems.length}টি আইটেম পাওয়া গেছে।`);
-      console.log(`${imageCount}টি আইটেমে ছবির URL পাওয়া গেছে।`);
-    } catch (error) {
-      console.error(`${feed.name} থেকে সংবাদ সংগ্রহ করা যায়নি:`, error.message);
+        category,
+        categoryEn:
+          category === 'কুমিল্লা'
+            ? 'Comilla'
+            : category === 'জাতীয়'
+              ? 'National'
+              : 'International',
+
+        isAutoImported: true,
+      });
+    }
+
+    console.log(`${feed.name}: ${allItems.length}টি সংবাদ পাওয়া গেছে।`);
+
+    return allItems;
+  } catch (error) {
+    console.error(`${feed.name} Feed Error:`, error.message);
+
+    // একটি Feed ব্যর্থ হলেও অন্য Feed চলবে
+    return [];
+  }
+}
+
+// ========================================
+// ৮. একাধিক Feed থেকে সংবাদ সংগ্রহ
+// ========================================
+
+async function collectFromFeeds(feeds, category) {
+  const results = await Promise.all(
+    feeds.map((feed) => fetchFeedNews(feed, category))
+  );
+
+  const uniqueNews = new Map();
+
+  for (const newsList of results) {
+    for (const item of newsList) {
+      const key = item.sourceUrl.split('#')[0].replace(/\/$/, '');
+
+      if (!uniqueNews.has(key)) {
+        uniqueNews.set(key, item);
+      }
     }
   }
 
-  return allNews;
+  return Array.from(uniqueNews.values());
+}
+
+// ========================================
+// ৯. কুমিল্লার সংবাদ সংগ্রহ
+// ========================================
+
+async function fetchComillaNews() {
+  if (COMILLA_RSS_FEEDS.length === 0) {
+    console.warn('কুমিল্লার RSS Feed যোগ করা হয়নি।');
+
+    return [];
+  }
+
+  return collectFromFeeds(COMILLA_RSS_FEEDS, 'কুমিল্লা');
+}
+
+// ========================================
+// ১০. জাতীয় সংবাদ সংগ্রহ
+// ========================================
+
+async function fetchNationalNews() {
+  return collectFromFeeds(NATIONAL_RSS_FEEDS, 'জাতীয়');
+}
+
+// ========================================
+// ১১. আন্তর্জাতিক সংবাদ সংগ্রহ
+// শুধু BBC World ও Al Jazeera
+// ========================================
+
+async function fetchInternationalNews() {
+  return collectFromFeeds(INTERNATIONAL_RSS_FEEDS, 'আন্তর্জাতিক');
 }
 
 module.exports = {
+  fetchComillaNews,
+  fetchNationalNews,
   fetchInternationalNews,
 };

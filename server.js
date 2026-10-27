@@ -3,9 +3,10 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 const cron = require('node-cron');
-const {
-  importInternationalNews,
-} = require('./services/internationalNewsService');
+
+// const {
+//   importInternationalNews,
+// } = require('./services/internationalNewsService');
 
 const { collectNewsToQueue } = require('./services/newsQueueService');
 const { processNewsQueue } = require('./services/newsQueueProcessor');
@@ -17,9 +18,6 @@ const advertisementRoutes = require('./routes/advertisementRoutes');
 
 const app = express();
 
-// Trust proxy only when correctly configured for your hosting.
-// Configure this according to your actual deployment environment.
-
 // CORS Configuration
 const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
   .split(',')
@@ -29,20 +27,25 @@ const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
 app.use(
   cors({
     origin(origin, callback) {
-      // Allow requests without Origin, such as Postman or server-to-server.
+      // Postman এবং server-to-server request-এর জন্য
+      // Origin না থাকলে অনুমতি দেওয়া হবে।
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
       return callback(new Error('CORS origin not allowed'));
     },
+
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+
+    // Advertisement Upload-এর প্রয়োজনীয় Header যোগ করা হয়েছে।
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Ad-Upload-Type'],
   })
 );
 
 // Request Body Limits
 app.use(express.json({ limit: '1mb' }));
+
 app.use(
   express.urlencoded({
     extended: true,
@@ -71,7 +74,6 @@ app.get('/', (req, res) => {
 // API Routes
 app.use('/api/news', newsRoutes);
 app.use('/api/admin', adminRoutes);
-
 app.use('/api/advertisements', advertisementRoutes);
 
 // Handle Unknown Routes
@@ -123,8 +125,10 @@ const PORT = process.env.PORT || 5000;
 async function startServer() {
   try {
     await connectDB();
+
     app.listen(PORT, () => {
       console.log(`NewsToday Backend running on port ${PORT}`);
+
       startInternationalNewsScheduler();
     });
   } catch (error) {
@@ -133,30 +137,31 @@ async function startServer() {
   }
 }
 
+// International News Scheduler
 function startInternationalNewsScheduler() {
   // প্রতি ১৫ মিনিটে RSS থেকে সংবাদ সংগ্রহ
   cron.schedule('*/15 * * * *', async () => {
-    console.log('\n⏰ RSS থেকে নতুন সংবাদ সংগ্রহ শুরু হচ্ছে...');
+    console.log('\nRSS থেকে নতুন সংবাদ সংগ্রহ শুরু হচ্ছে...');
 
     try {
       await collectNewsToQueue();
     } catch (error) {
-      console.error('❌ RSS সংগ্রহ ব্যর্থ:', error.message);
+      console.error('RSS সংগ্রহ ব্যর্থ:', error.message);
     }
   });
 
-  // প্রতি মিনিটে Queue থেকে একটি সংবাদ প্রক্রিয়া
+  // প্রতি মিনিটে Queue থেকে সংবাদ প্রক্রিয়া
   cron.schedule('* * * * *', async () => {
     try {
       await processNewsQueue();
     } catch (error) {
-      console.error('❌ Queue Processor ব্যর্থ:', error.message);
+      console.error('Queue Processor ব্যর্থ:', error.message);
     }
   });
 
-  console.log('✅ Queue Scheduler চালু হয়েছে।');
-  console.log('📥 প্রতি ১৫ মিনিটে RSS সংগ্রহ হবে।');
-  console.log('⚙️ প্রতি মিনিটে Queue Processor কাজ করবে।');
+  console.log('Queue Scheduler চালু হয়েছে।');
+  console.log('প্রতি ১৫ মিনিটে RSS সংগ্রহ হবে।');
+  console.log('প্রতি মিনিটে Queue Processor কাজ করবে।');
 }
 
 startServer();

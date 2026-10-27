@@ -36,6 +36,11 @@ const adminSchema = new mongoose.Schema(
       default: 'admin',
       immutable: true,
     },
+    tokenVersion: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
   },
   {
     timestamps: true,

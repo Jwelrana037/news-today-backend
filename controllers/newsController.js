@@ -1,44 +1,37 @@
 const mongoose = require('mongoose');
 const News = require('../models/News');
 
-// সব প্রকাশিত সংবাদ দেখা
-// Get Published News with Pagination
+// ========================================
+// 1. সব প্রকাশিত সংবাদ দেখা (Pagination)
+// GET /api/news?page=1&limit=10
+// ========================================
 exports.getPublishedNews = async (req, res) => {
   try {
-    // Step 1: Page number গ্রহণ
     const requestedPage = Math.max(1, parseInt(req.query.page, 10) || 1);
 
-    // Step 2: প্রতি পেজে কতটি সংবাদ থাকবে
     const limit = Math.min(
       50,
       Math.max(1, parseInt(req.query.limit, 10) || 10)
     );
 
-    // Step 3: মোট Published News গণনা
-    const totalNews = await News.countDocuments({
+    const filter = {
       status: 'published',
-    });
+    };
 
-    // Step 4: মোট পেজের সংখ্যা
+    const totalNews = await News.countDocuments(filter);
     const totalPages = Math.ceil(totalNews / limit);
 
-    // Step 5: চাওয়া পেজের সীমা ঠিক রাখা
     const currentPage =
       totalPages > 0 ? Math.min(requestedPage, totalPages) : 1;
 
-    // Step 6: আগের পেজগুলোর সংবাদ বাদ দেওয়া
     const skip = (currentPage - 1) * limit;
 
-    // Step 7: নির্দিষ্ট পেজের সংবাদ সংগ্রহ
-    const news = await News.find({
-      status: 'published',
-    })
-      .sort({ createdAt: -1 })
+    const news = await News.find(filter)
+      .sort({ createdAt: -1, _id: -1 })
       .skip(skip)
       .limit(limit);
 
-    // Step 8: Response পাঠানো
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: news.length,
       totalNews,
@@ -50,14 +43,17 @@ exports.getPublishedNews = async (req, res) => {
   } catch (error) {
     console.error('Get Published News Error:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'সংবাদ লোড করা যায়নি',
+      message: 'সংবাদ লোড করা যায়নি।',
     });
   }
 };
 
-// ID দিয়ে একটি প্রকাশিত সংবাদ দেখা
+// ========================================
+// 2. ID দিয়ে একটি প্রকাশিত সংবাদ দেখা
+// GET /api/news/:id
+// ========================================
 exports.getNewsById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -65,7 +61,7 @@ exports.getNewsById = async (req, res) => {
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
-        message: 'সংবাদের ID সঠিক নয়',
+        message: 'সংবাদের ID সঠিক নয়।',
       });
     }
 
@@ -77,43 +73,53 @@ exports.getNewsById = async (req, res) => {
     if (!news) {
       return res.status(404).json({
         success: false,
-        message: 'সংবাদ পাওয়া যায়নি',
+        message: 'সংবাদ পাওয়া যায়নি।',
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: news,
     });
   } catch (error) {
-    res.status(500).json({
+    console.error('Get News By ID Error:', error);
+
+    return res.status(500).json({
       success: false,
-      message: 'Server-এ সমস্যা হয়েছে',
+      message: 'সংবাদ লোড করা যায়নি।',
     });
   }
 };
 
-// Admin-এর সব সংবাদ দেখা
+// ========================================
+// 3. Admin-এর সব সংবাদ দেখা
+// GET /api/news/admin/all
+// Admin authentication প্রয়োজন
+// ========================================
 exports.getAllNewsForAdmin = async (req, res) => {
   try {
-    const news = await News.find().sort({
-      createdAt: -1,
-    });
+    const news = await News.find().sort({ createdAt: -1, _id: -1 });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: news.length,
       data: news,
     });
   } catch (error) {
-    res.status(500).json({
+    console.error('Get All Admin News Error:', error);
+
+    return res.status(500).json({
       success: false,
-      message: 'সংবাদ লোড করা যায়নি',
+      message: 'সংবাদ লোড করা যায়নি।',
     });
   }
 };
 
-// নতুন সংবাদ তৈরি
+// ========================================
+// 4. নতুন সংবাদ তৈরি
+// POST /api/news
+// Admin authentication প্রয়োজন
+// ========================================
 exports.createNews = async (req, res) => {
   try {
     const {
@@ -129,14 +135,51 @@ exports.createNews = async (req, res) => {
       author,
       status,
       isFeatured,
+      division,
+      district,
+      upazila,
     } = req.body;
 
-    console.log('Request Body:', req.body);
-
-    if (!title || !description || !content || !category) {
+    // প্রয়োজনীয় Field যাচাই
+    if (
+      typeof title !== 'string' ||
+      !title.trim() ||
+      typeof description !== 'string' ||
+      !description.trim() ||
+      typeof content !== 'string' ||
+      !content.trim() ||
+      typeof category !== 'string' ||
+      !category.trim()
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'Title, Description, Content ও Category আবশ্যক',
+        message: 'Title, Description, Content ও Category আবশ্যক।',
+      });
+    }
+
+    // বাংলা Category যাচাই
+    const validCategories = [
+      'জাতীয়',
+      'রাজনীতি',
+      'আন্তর্জাতিক',
+      'খেলাধুলা',
+      'প্রযুক্তি',
+      'বিনোদন',
+      'অর্থনীতি',
+      'ব্যবসা-বাণিজ্য',
+      'শিক্ষা',
+      'অপরাধ',
+      'স্বাস্থ্য',
+      'চাকরি',
+      'ধর্ম',
+      'পরিবেশ',
+      'কৃষি',
+    ];
+
+    if (!validCategories.includes(category.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'অনুমোদিত Category নির্বাচন করুন।',
       });
     }
 
@@ -150,7 +193,7 @@ exports.createNews = async (req, res) => {
       });
     }
 
-    // Featured value যাচাই
+    // Featured যাচাই
     if (isFeatured !== undefined && typeof isFeatured !== 'boolean') {
       return res.status(400).json({
         success: false,
@@ -158,42 +201,101 @@ exports.createNews = async (req, res) => {
       });
     }
 
+    // English Category যাচাই
+    const englishCategoryMap = {
+      জাতীয়: 'National',
+      রাজনীতি: 'Politics',
+      আন্তর্জাতিক: 'International',
+      খেলাধুলা: 'Sports',
+      প্রযুক্তি: 'Technology',
+      বিনোদন: 'Entertainment',
+      অর্থনীতি: 'Economy',
+      'ব্যবসা-বাণিজ্য': 'Business',
+      শিক্ষা: 'Education',
+      অপরাধ: 'Crime',
+      স্বাস্থ্য: 'Health',
+      চাকরি: 'Jobs',
+      ধর্ম: 'Religion',
+      পরিবেশ: 'Environment',
+      কৃষি: 'Agriculture',
+    };
+
+    const safeCategoryEn = englishCategoryMap[category.trim()];
+
+    // Division যাচাই
+    const allowedDivisions = [
+      '',
+      'ঢাকা',
+      'চট্টগ্রাম',
+      'রাজশাহী',
+      'খুলনা',
+      'বরিশাল',
+      'সিলেট',
+      'রংপুর',
+      'ময়মনসিংহ',
+    ];
+
+    const safeDivision = division?.trim() || '';
+
+    if (!allowedDivisions.includes(safeDivision)) {
+      return res.status(400).json({
+        success: false,
+        message: 'সঠিক বিভাগ নির্বাচন করুন।',
+      });
+    }
+
     const news = await News.create({
-      title,
-      titleEn,
-      description,
-      descriptionEn,
-      content,
-      contentEn,
-      category,
-      categoryEn,
-      image,
-      author: author || req.admin.name,
+      title: title.trim(),
+      titleEn: titleEn?.trim() || '',
+      description: description.trim(),
+      descriptionEn: descriptionEn?.trim() || '',
+      content: content.trim(),
+      contentEn: contentEn?.trim() || '',
+      category: category.trim(),
+      categoryEn: safeCategoryEn,
+      image: image?.trim() || '',
+      author: req.admin?.name || author?.trim() || 'Admin',
       status: status || 'draft',
       isFeatured: isFeatured ?? false,
+      division: safeDivision,
+      district: district?.trim() || '',
+      upazila: upazila?.trim() || '',
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'সংবাদ তৈরি হয়েছে',
+      message: 'সংবাদ তৈরি হয়েছে।',
       data: news,
     });
   } catch (error) {
-    if (error.name === 'ValidationError') {
+    console.error('Create News Error:', error);
+
+    if (error.name === 'ValidationError' || error.name === 'CastError') {
       return res.status(400).json({
         success: false,
         message: error.message,
       });
     }
 
-    res.status(500).json({
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'এই সংবাদসূত্রের লিংক আগে থেকেই রয়েছে।',
+      });
+    }
+
+    return res.status(500).json({
       success: false,
-      message: 'সংবাদ তৈরি করা যায়নি',
+      message: 'সংবাদ তৈরি করা যায়নি।',
     });
   }
 };
 
-// সংবাদ আপডেট
+// ========================================
+// 5. সংবাদ আপডেট
+// PUT /api/news/:id
+// Admin authentication প্রয়োজন
+// ========================================
 exports.updateNews = async (req, res) => {
   try {
     const { id } = req.params;
@@ -201,7 +303,7 @@ exports.updateNews = async (req, res) => {
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
-        message: 'সংবাদের ID সঠিক নয়',
+        message: 'সংবাদের ID সঠিক নয়।',
       });
     }
 
@@ -218,6 +320,9 @@ exports.updateNews = async (req, res) => {
       'author',
       'status',
       'isFeatured',
+      'division',
+      'district',
+      'upazila',
     ];
 
     const updates = {};
@@ -225,6 +330,59 @@ exports.updateNews = async (req, res) => {
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         updates[field] = req.body[field];
+      }
+    }
+
+    // আপডেট করার মতো Field আছে কি না
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'আপডেট করার জন্য কোনো বৈধ Data পাওয়া যায়নি।',
+      });
+    }
+
+    // Status যাচাই
+    if (
+      updates.status !== undefined &&
+      !['draft', 'published'].includes(updates.status)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Status অবশ্যই draft অথবা published হতে হবে।',
+      });
+    }
+
+    // Featured যাচাই
+    if (
+      updates.isFeatured !== undefined &&
+      typeof updates.isFeatured !== 'boolean'
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'isFeatured-এর মান true অথবা false হতে হবে।',
+      });
+    }
+
+    // Text Field trim
+    const textFields = [
+      'title',
+      'titleEn',
+      'description',
+      'descriptionEn',
+      'content',
+      'contentEn',
+      'category',
+      'categoryEn',
+      'image',
+      'author',
+      'division',
+      'district',
+      'upazila',
+    ];
+
+    for (const field of textFields) {
+      if (typeof updates[field] === 'string') {
+        updates[field] = updates[field].trim();
       }
     }
 
@@ -240,13 +398,13 @@ exports.updateNews = async (req, res) => {
     if (!news) {
       return res.status(404).json({
         success: false,
-        message: 'সংবাদ পাওয়া যায়নি',
+        message: 'সংবাদ পাওয়া যায়নি।',
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'সংবাদ আপডেট হয়েছে',
+      message: 'সংবাদ আপডেট হয়েছে।',
       data: news,
     });
   } catch (error) {
@@ -266,7 +424,11 @@ exports.updateNews = async (req, res) => {
   }
 };
 
-// সংবাদ Delete
+// ========================================
+// 6. সংবাদ Delete
+// DELETE /api/news/:id
+// Admin authentication প্রয়োজন
+// ========================================
 exports.deleteNews = async (req, res) => {
   try {
     const { id } = req.params;
@@ -274,7 +436,7 @@ exports.deleteNews = async (req, res) => {
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
-        message: 'সংবাদের ID সঠিক নয়',
+        message: 'সংবাদের ID সঠিক নয়।',
       });
     }
 
@@ -283,49 +445,60 @@ exports.deleteNews = async (req, res) => {
     if (!news) {
       return res.status(404).json({
         success: false,
-        message: 'সংবাদ পাওয়া যায়নি',
+        message: 'সংবাদ পাওয়া যায়নি।',
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'সংবাদ Delete হয়েছে',
+      message: 'সংবাদ Delete হয়েছে।',
     });
   } catch (error) {
-    res.status(500).json({
+    console.error('Delete News Error:', error);
+
+    return res.status(500).json({
       success: false,
-      message: 'সংবাদ Delete করা যায়নি',
+      message: 'সংবাদ Delete করা যায়নি।',
     });
   }
 };
 
-// Featured News দেখানো
-exports.getFeaturedNews = async (req, res, next) => {
+// ========================================
+// 7. Featured News
+// GET /api/news/featured
+// ========================================
+exports.getFeaturedNews = async (req, res) => {
   try {
     const news = await News.find({
       status: 'published',
       isFeatured: true,
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(5);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: news.length,
       data: news,
     });
   } catch (error) {
-    next(error);
+    console.error('Get Featured News Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Featured News লোড করা যায়নি।',
+    });
   }
 };
 
-// বিভাগ অনুযায়ী প্রকাশিত সংবাদ দেখানো
-// Category অনুযায়ী প্রকাশিত সংবাদ দেখানো
-exports.getNewsByCategory = async (req, res, next) => {
+// ========================================
+// 8. Category অনুযায়ী সংবাদ
+// GET /api/news/category/:category
+// ========================================
+exports.getNewsByCategory = async (req, res) => {
   try {
-    const { category } = req.params;
+    const category = req.params.category?.trim().toLowerCase();
 
-    // URL slug অনুযায়ী বাংলা ও ইংরেজি Category
     const categories = {
       national: {
         bn: 'জাতীয়',
@@ -351,11 +524,30 @@ exports.getNewsByCategory = async (req, res, next) => {
         bn: 'বিনোদন',
         en: 'Entertainment',
       },
+      business: {
+        bn: 'ব্যবসা-বাণিজ্য',
+        en: 'Business',
+      },
+      education: {
+        bn: 'শিক্ষা',
+        en: 'Education',
+      },
+      health: {
+        bn: 'স্বাস্থ্য',
+        en: 'Health',
+      },
+      crime: {
+        bn: 'অপরাধ',
+        en: 'Crime',
+      },
+      agriculture: {
+        bn: 'কৃষি',
+        en: 'Agriculture',
+      },
     };
 
     const selectedCategory = categories[category];
 
-    // Category পাওয়া না গেলে
     if (!selectedCategory) {
       return res.status(400).json({
         success: false,
@@ -363,14 +555,13 @@ exports.getNewsByCategory = async (req, res, next) => {
       });
     }
 
-    // Database থেকে সংশ্লিষ্ট প্রকাশিত সংবাদ খোঁজা
     const news = await News.find({
       status: 'published',
       $or: [
         { category: selectedCategory.bn },
         { categoryEn: selectedCategory.en },
       ],
-    }).sort({ createdAt: -1 });
+    }).sort({ createdAt: -1, _id: -1 });
 
     return res.status(200).json({
       success: true,
@@ -378,16 +569,98 @@ exports.getNewsByCategory = async (req, res, next) => {
       data: news,
     });
   } catch (error) {
-    next(error);
+    console.error('Get News By Category Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Category অনুযায়ী সংবাদ লোড করা যায়নি।',
+    });
   }
 };
 
-// সংবাদ সার্চ করা
-exports.searchNews = async (req, res, next) => {
+// ========================================
+// 9. Division, District ও Upazila অনুযায়ী সংবাদ
+// GET /api/news/location?division=চট্টগ্রাম
+// GET /api/news/location?district=কুমিল্লা
+// GET /api/news/location?upazila=দাউদকান্দি
+// ========================================
+exports.getNewsByLocation = async (req, res) => {
+  try {
+    const { division, district, upazila } = req.query;
+
+    const locationFilter = {};
+
+    // অন্তত একটি Location দিতে হবে
+    if (!division && !district && !upazila) {
+      return res.status(400).json({
+        success: false,
+        message: 'Division, District অথবা Upazila দিন।',
+      });
+    }
+
+    if (division) {
+      locationFilter.division = division.trim();
+    }
+
+    if (district) {
+      locationFilter.district = district.trim();
+    }
+
+    if (upazila) {
+      locationFilter.upazila = upazila.trim();
+    }
+
+    const filter = {
+      status: 'published',
+      ...locationFilter,
+    };
+
+    const requestedPage = Math.max(1, parseInt(req.query.page, 10) || 1);
+
+    const limit = Math.min(
+      50,
+      Math.max(1, parseInt(req.query.limit, 10) || 10)
+    );
+
+    const totalNews = await News.countDocuments(filter);
+    const totalPages = Math.ceil(totalNews / limit);
+
+    const currentPage =
+      totalPages > 0 ? Math.min(requestedPage, totalPages) : 1;
+
+    const news = await News.find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip((currentPage - 1) * limit)
+      .limit(limit);
+
+    return res.status(200).json({
+      success: true,
+      count: news.length,
+      totalNews,
+      currentPage,
+      totalPages,
+      limit,
+      filters: locationFilter,
+      data: news,
+    });
+  } catch (error) {
+    console.error('Get News By Location Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'অবস্থান অনুযায়ী সংবাদ লোড করা যায়নি।',
+    });
+  }
+};
+
+// ========================================
+// 10. সংবাদ Search
+// GET /api/news/search?q=বাংলাদেশ
+// ========================================
+exports.searchNews = async (req, res) => {
   try {
     const query = req.query.q?.trim();
 
-    // সার্চের শব্দ যাচাই
     if (!query) {
       return res.status(400).json({
         success: false,
@@ -395,10 +668,15 @@ exports.searchNews = async (req, res, next) => {
       });
     }
 
-    // Regex-এর বিশেষ চিহ্ন Escape করা
+    if (query.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'সার্চের শব্দ সর্বোচ্চ ১০০ অক্ষরের হতে পারবে।',
+      });
+    }
+
     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // বাংলা ও ইংরেজি—দুই ভাষাতেই সংবাদ খোঁজা
     const searchRegex = new RegExp(escapedQuery, 'i');
 
     const news = await News.find({
@@ -412,23 +690,34 @@ exports.searchNews = async (req, res, next) => {
         { contentEn: searchRegex },
         { category: searchRegex },
         { categoryEn: searchRegex },
+        { division: searchRegex },
+        { district: searchRegex },
+        { upazila: searchRegex },
       ],
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(50);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: news.length,
       data: news,
     });
   } catch (error) {
-    next(error);
+    console.error('Search News Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'সংবাদ Search করা যায়নি।',
+    });
   }
 };
 
-// News Image Upload Controller
-exports.uploadNewsImage = async (req, res, next) => {
+// ========================================
+// 11. News Image Upload
+// POST /api/news/upload-image
+// ========================================
+exports.uploadNewsImage = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -447,6 +736,11 @@ exports.uploadNewsImage = async (req, res, next) => {
       },
     });
   } catch (error) {
-    next(error);
+    console.error('Upload News Image Error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'ছবি Upload করা যায়নি।',
+    });
   }
 };

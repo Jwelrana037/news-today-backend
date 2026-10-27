@@ -34,11 +34,28 @@ exports.protectAdmin = async (req, res, next) => {
     }
 
     // 4. JWT যাচাই
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: ['HS256'],
+    });
 
-    // 5. Admin ডেটাবেজে আছে কি না পরীক্ষা
-    const admin = await Admin.findById(decoded.id).select('-password');
+    // 5. Token-এর প্রয়োজনীয় তথ্য যাচাই
+    if (
+      !decoded.id ||
+      decoded.role !== 'admin' ||
+      !Number.isInteger(decoded.tokenVersion)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: 'Token অবৈধ। আবার Login করুন।',
+      });
+    }
 
+    // 6. Database থেকে Admin এবং Token Version সংগ্রহ
+    const admin = await Admin.findById(decoded.id).select(
+      '+tokenVersion -password'
+    );
+
+    // 7. Admin আছে কি না পরীক্ষা
     if (!admin || admin.role !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -46,10 +63,18 @@ exports.protectAdmin = async (req, res, next) => {
       });
     }
 
-    // 6. পরবর্তী Route-এর জন্য Admin সংরক্ষণ
+    // 8. Token Version মিলিয়ে দেখা
+    if ((admin.tokenVersion || 0) !== decoded.tokenVersion) {
+      return res.status(401).json({
+        success: false,
+        message: 'আপনার Session বাতিল হয়েছে। আবার Login করুন।',
+      });
+    }
+
+    // 9. পরবর্তী Route-এর জন্য Admin সংরক্ষণ
     req.admin = admin;
 
-    // 7. পরবর্তী Middleware বা Controller চালানো
+    // 10. পরবর্তী Middleware বা Controller চালানো
     return next();
   } catch (error) {
     if (

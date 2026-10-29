@@ -6,267 +6,80 @@ const {
   fetchComillaNews,
   fetchNationalNews,
   fetchInternationalNews,
+  fetchPoliticsNews,
+  fetchSportsNews,
+  fetchEntertainmentNews,
+  fetchTechnologyNews,
 } = require('./rssService');
 
 // ========================================
-// RSS Queue Collector
-// অগ্রাধিকার: কুমিল্লা → জাতীয় → আন্তর্জাতিক
+// 1. Category Configuration
+// অগ্রাধিকার:
+// কুমিল্লা → জাতীয় → রাজনীতি → আন্তর্জাতিক
+// → খেলাধুলা → বিনোদন → প্রযুক্তি
 // ========================================
 
-async function collectNewsToQueue() {
-  console.log('\n📥 RSS সংবাদ সংগ্রহ শুরু হচ্ছে...');
-
-  let addedCount = 0;
-  let skippedCount = 0;
-  let failedCount = 0;
-  let totalFetched = 0;
-
-  try {
-    // Step 1: Auto News Settings
-    const settings = await NewsSettings.findOne({
-      key: 'autoNews',
-    });
-
-    if (!settings || settings.enabled !== true) {
-      console.log('⏸️ Auto News বন্ধ অথবা Settings তৈরি হয়নি।');
-
-      return await getQueueStats({
-        total: 0,
-        addedCount,
-        skippedCount,
-        failedCount,
-      });
-    }
-
-    // Step 2: কোন বিভাগ চালু আছে
-    const comillaEnabled = settings.comillaEnabled !== false;
-
-    const nationalEnabled = settings.nationalEnabled === true;
-
-    const internationalEnabled = settings.internationalEnabled === true;
-
-    if (!comillaEnabled && !nationalEnabled && !internationalEnabled) {
-      console.log('⏸️ সব RSS বিভাগ বন্ধ।');
-
-      return await getQueueStats({
-        total: 0,
-        addedCount,
-        skippedCount,
-        failedCount,
-      });
-    }
-
-    // Step 3: বিভাগ অনুযায়ী RSS সংগ্রহ
-    const rssNews = [];
-
-    // ৩.১ কুমিল্লার সংবাদ আগে সংগ্রহ
-    if (comillaEnabled) {
-      try {
-        const items = await fetchComillaNews();
-
-        const comillaNews = (items || []).map((item) => ({
-          ...item,
-          category: 'কুমিল্লা',
-          categoryEn: 'Comilla',
-        }));
-
-        rssNews.push(...comillaNews);
-
-        console.log(`📍 কুমিল্লার সংবাদ পাওয়া গেছে: ${comillaNews.length}`);
-      } catch (error) {
-        console.error('❌ কুমিল্লার RSS Error:', error.message);
-      }
-    }
-
-    // ৩.২ জাতীয় সংবাদ
-    if (nationalEnabled) {
-      try {
-        const items = await fetchNationalNews();
-
-        const nationalNews = (items || []).map((item) => ({
-          ...item,
-          category: 'জাতীয়',
-          categoryEn: 'National',
-        }));
-
-        rssNews.push(...nationalNews);
-
-        console.log(`🇧🇩 জাতীয় সংবাদ পাওয়া গেছে: ${nationalNews.length}`);
-      } catch (error) {
-        console.error('❌ জাতীয় RSS Error:', error.message);
-      }
-    }
-
-    // ৩.৩ আন্তর্জাতিক সংবাদ
-    if (internationalEnabled) {
-      try {
-        const items = await fetchInternationalNews();
-
-        const internationalNews = (items || []).map((item) => ({
-          ...item,
-          category: 'আন্তর্জাতিক',
-          categoryEn: 'International',
-        }));
-
-        rssNews.push(...internationalNews);
-
-        console.log(
-          `🌍 আন্তর্জাতিক সংবাদ পাওয়া গেছে: ${internationalNews.length}`
-        );
-      } catch (error) {
-        console.error('❌ আন্তর্জাতিক RSS Error:', error.message);
-      }
-    }
-
-    totalFetched = rssNews.length;
-
-    console.log(`📰 মোট RSS সংবাদ: ${totalFetched}`);
-
-    // Step 4: URL স্বাভাবিক করা ও Duplicate বাদ দেওয়া
-    const uniqueNews = new Map();
-
-    for (const item of rssNews) {
-      const sourceUrl = normalizeUrl(item.sourceUrl || item.link);
-
-      const title = typeof item.title === 'string' ? item.title.trim() : '';
-
-      if (!sourceUrl || !title) {
-        skippedCount++;
-        continue;
-      }
-
-      const normalizedItem = {
-        ...item,
-        title,
-        sourceUrl,
-      };
-
-      // একই URL একাধিক Feed-এ থাকলে প্রথমটিই থাকবে।
-      // সংগ্রহের ক্রম: কুমিল্লা, জাতীয়, আন্তর্জাতিক।
-      if (!uniqueNews.has(sourceUrl)) {
-        uniqueNews.set(sourceUrl, normalizedItem);
-      } else {
-        skippedCount++;
-      }
-    }
-
-    // Step 5: Category ও প্রকাশের তারিখ অনুযায়ী সাজানো
-    const categoryPriority = {
-      কুমিল্লা: 1,
-      জাতীয়: 2,
-      আন্তর্জাতিক: 3,
-    };
-
-    const uniqueItems = [...uniqueNews.values()];
-
-    uniqueItems.sort((a, b) => {
-      const priorityA = categoryPriority[a.category] ?? 99;
-
-      const priorityB = categoryPriority[b.category] ?? 99;
-
-      if (priorityA !== priorityB) {
-        return priorityA - priorityB;
-      }
-
-      const dateA = new Date(
-        a.sourcePublishedAt || a.publishedAt || 0
-      ).getTime();
-
-      const dateB = new Date(
-        b.sourcePublishedAt || b.publishedAt || 0
-      ).getTime();
-
-      return dateB - dateA;
-    });
-
-    // Step 6: News ও Queue-তে আগে আছে কি না পরীক্ষা
-    for (const item of uniqueItems) {
-      try {
-        const { title, sourceUrl, category, categoryEn } = item;
-
-        // News collection-এ Duplicate Check
-        const existingNews = await News.exists({
-          sourceUrl,
-        });
-
-        if (existingNews) {
-          skippedCount++;
-          continue;
-        }
-
-        // Queue-তে Duplicate Check
-        const existingQueue = await NewsQueue.exists({
-          sourceUrl,
-        });
-
-        if (existingQueue) {
-          skippedCount++;
-          continue;
-        }
-
-        // Step 7: Queue-তে নতুন সংবাদ যোগ
-        await NewsQueue.create({
-          source: item.source || 'Unknown',
-
-          sourceUrl,
-
-          title,
-
-          summary: typeof item.summary === 'string' ? item.summary.trim() : '',
-
-          category,
-
-          categoryEn,
-
-          image: item.image || '',
-
-          sourcePublishedAt: item.sourcePublishedAt || item.publishedAt || null,
-
-          status: 'pending',
-
-          nextAttemptAt: new Date(),
-
-          attempts: 0,
-
-          lastError: '',
-        });
-
-        addedCount++;
-
-        console.log(`✅ [${category}] Queue-তে যোগ হয়েছে: ${title}`);
-      } catch (error) {
-        // Unique index-এর কারণে Duplicate হলে
-        // নতুন করে Queue-তে যোগ করার চেষ্টা করা হবে না।
-        if (error.code === 11000) {
-          skippedCount++;
-          continue;
-        }
-
-        failedCount++;
-
-        console.error(
-          `❌ Queue-তে যোগ করা যায়নি: ${item.title}`,
-          error.message
-        );
-      }
-    }
-
-    // Step 8: Queue Statistics
-    return await getQueueStats({
-      total: totalFetched,
-      addedCount,
-      skippedCount,
-      failedCount,
-    });
-  } catch (error) {
-    console.error('❌ RSS Queue সংগ্রহ ব্যর্থ:', error.message);
-
-    throw error;
-  }
-}
+const NEWS_CATEGORIES = [
+  {
+    key: 'comilla',
+    name: 'কুমিল্লা',
+    nameEn: 'Comilla',
+    enabledSetting: 'comillaEnabled',
+    fetch: fetchComillaNews,
+    priority: 1,
+  },
+  {
+    key: 'national',
+    name: 'জাতীয়',
+    nameEn: 'National',
+    enabledSetting: 'nationalEnabled',
+    fetch: fetchNationalNews,
+    priority: 2,
+  },
+  {
+    key: 'politics',
+    name: 'রাজনীতি',
+    nameEn: 'Politics',
+    enabledSetting: 'politicsEnabled',
+    fetch: fetchPoliticsNews,
+    priority: 3,
+  },
+  {
+    key: 'international',
+    name: 'আন্তর্জাতিক',
+    nameEn: 'International',
+    enabledSetting: 'internationalEnabled',
+    fetch: fetchInternationalNews,
+    priority: 4,
+  },
+  {
+    key: 'sports',
+    name: 'খেলাধুলা',
+    nameEn: 'Sports',
+    enabledSetting: 'sportsEnabled',
+    fetch: fetchSportsNews,
+    priority: 5,
+  },
+  {
+    key: 'entertainment',
+    name: 'বিনোদন',
+    nameEn: 'Entertainment',
+    enabledSetting: 'entertainmentEnabled',
+    fetch: fetchEntertainmentNews,
+    priority: 6,
+  },
+  {
+    key: 'technology',
+    name: 'প্রযুক্তি',
+    nameEn: 'Technology',
+    enabledSetting: 'technologyEnabled',
+    fetch: fetchTechnologyNews,
+    priority: 7,
+  },
+];
 
 // ========================================
-// URL Normalize
+// 2. Helper: Normalize URL
 // ========================================
 
 function normalizeUrl(value) {
@@ -277,10 +90,20 @@ function normalizeUrl(value) {
   try {
     const url = new URL(value.trim());
 
-    // URL fragment বাদ
+    // কেবল HTTP/HTTPS URL গ্রহণ করা হবে।
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return '';
+    }
+
+    // Credentials-সহ URL গ্রহণ করা হবে না।
+    if (url.username || url.password) {
+      return '';
+    }
+
+    // Fragment বাদ দেওয়া।
     url.hash = '';
 
-    // সাধারণ tracking parameters বাদ
+    // Tracking parameters বাদ দেওয়া।
     const trackingParameters = [
       'utm_source',
       'utm_medium',
@@ -295,56 +118,349 @@ function normalizeUrl(value) {
       url.searchParams.delete(parameter);
     }
 
-    return url.toString().replace(/\/$/, '');
+    // URL-এর শেষের slash সরানো।
+    let normalizedUrl = url.toString();
+
+    if (normalizedUrl.endsWith('/')) {
+      normalizedUrl = normalizedUrl.slice(0, -1);
+    }
+
+    // NewsQueue schema-তে sourceUrl-এর সর্বোচ্চ দৈর্ঘ্য 2048।
+    if (normalizedUrl.length > 2048) {
+      return '';
+    }
+
+    return normalizedUrl;
   } catch {
-    return value.trim();
+    // Invalid URL-কে raw string হিসেবে গ্রহণ করা হবে না।
+    return '';
   }
 }
 
 // ========================================
-// Queue Statistics
+// 3. Helper: Normalize Date
 // ========================================
 
-async function getQueueStats({ total, addedCount, skippedCount, failedCount }) {
+function normalizeDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
+}
+
+// ========================================
+// 4. RSS Queue Collector
+// ========================================
+
+async function collectNewsToQueue() {
+  console.log('\nRSS সংবাদ সংগ্রহ শুরু হচ্ছে...');
+
+  let addedCount = 0;
+  let skippedCount = 0;
+  let failedCount = 0;
+  let totalFetched = 0;
+
+  try {
+    // Step 1: Auto News Settings
+    const settings = await NewsSettings.findOne({
+      key: 'autoNews',
+    });
+
+    if (!settings || settings.enabled !== true) {
+      console.log('Auto News বন্ধ অথবা Settings তৈরি হয়নি।');
+
+      return await getQueueStats({
+        total: 0,
+        addedCount,
+        skippedCount,
+        failedCount,
+      });
+    }
+
+    // Step 2: Enabled Categories
+    //
+    // Settings document-এ কোনো নতুন field না থাকলে
+    // সেটিকে enabled হিসেবে বিবেচনা করা হচ্ছে।
+    const enabledCategories = NEWS_CATEGORIES.filter(
+      (category) => settings[category.enabledSetting] !== false
+    );
+
+    if (enabledCategories.length === 0) {
+      console.log('কোনো RSS বিভাগ চালু নেই।');
+
+      return await getQueueStats({
+        total: 0,
+        addedCount,
+        skippedCount,
+        failedCount,
+      });
+    }
+
+    // Step 3: RSS Feed থেকে সংবাদ সংগ্রহ
+    const rssNews = [];
+
+    for (const category of enabledCategories) {
+      try {
+        console.log(`${category.name} সংবাদ সংগ্রহ হচ্ছে...`);
+
+        const items = await category.fetch();
+
+        if (!Array.isArray(items)) {
+          console.warn(`${category.name}: RSS service array ফেরত দেয়নি।`);
+
+          failedCount++;
+          continue;
+        }
+
+        const categoryNews = items.map((item) => ({
+          ...item,
+          category: category.name,
+          categoryEn: category.nameEn,
+        }));
+
+        rssNews.push(...categoryNews);
+
+        console.log(
+          `${category.name}: ${categoryNews.length}টি সংবাদ পাওয়া গেছে।`
+        );
+      } catch (error) {
+        failedCount++;
+
+        console.error(`${category.name} RSS Error:`, error.message);
+      }
+    }
+
+    totalFetched = rssNews.length;
+
+    console.log(`মোট RSS সংবাদ পাওয়া গেছে: ${totalFetched}`);
+
+    // Step 4: Validate এবং Deduplicate RSS Items
+    const uniqueNews = new Map();
+
+    for (const item of rssNews) {
+      if (!item || typeof item !== 'object') {
+        skippedCount++;
+        continue;
+      }
+
+      const sourceUrl = normalizeUrl(item.sourceUrl || item.link);
+
+      const title = typeof item.title === 'string' ? item.title.trim() : '';
+
+      // প্রয়োজনীয় তথ্য না থাকলে বাদ।
+      if (!sourceUrl || !title) {
+        skippedCount++;
+        continue;
+      }
+
+      // NewsQueue schema-তে title-এর সর্বোচ্চ দৈর্ঘ্য 500।
+      if (title.length > 500) {
+        skippedCount++;
+        console.warn('অতিরিক্ত লম্বা title বাদ দেওয়া হয়েছে।');
+        continue;
+      }
+
+      const normalizedItem = {
+        ...item,
+        title,
+        sourceUrl,
+      };
+
+      // একই URL একবারই রাখা হবে।
+      if (uniqueNews.has(sourceUrl)) {
+        skippedCount++;
+        continue;
+      }
+
+      uniqueNews.set(sourceUrl, normalizedItem);
+    }
+
+    // Step 5: Category Priority এবং Publication Date
+    const categoryPriority = Object.fromEntries(
+      NEWS_CATEGORIES.map((category) => [category.name, category.priority])
+    );
+
+    const uniqueItems = [...uniqueNews.values()];
+
+    uniqueItems.sort((a, b) => {
+      const priorityA = categoryPriority[a.category] ?? 99;
+      const priorityB = categoryPriority[b.category] ?? 99;
+
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+
+      const dateA =
+        normalizeDate(a.sourcePublishedAt || a.publishedAt)?.getTime() || 0;
+
+      const dateB =
+        normalizeDate(b.sourcePublishedAt || b.publishedAt)?.getTime() || 0;
+
+      return dateB - dateA;
+    });
+
+    // Step 6: Database Duplicate Check
+    for (const item of uniqueItems) {
+      try {
+        const { title, sourceUrl, category, categoryEn } = item;
+
+        // Published/Draft News-এ আগে থেকেই থাকলে বাদ।
+        const existingNews = await News.exists({
+          sourceUrl,
+        });
+
+        if (existingNews) {
+          skippedCount++;
+          continue;
+        }
+
+        // Queue-তে আগে থেকেই থাকলে বাদ।
+        const existingQueue = await NewsQueue.exists({
+          sourceUrl,
+        });
+
+        if (existingQueue) {
+          skippedCount++;
+          continue;
+        }
+
+        // Step 7: Validate Queue Fields
+        const source =
+          typeof item.source === 'string' && item.source.trim()
+            ? item.source.trim().slice(0, 200)
+            : 'Unknown';
+
+        const summary =
+          typeof item.summary === 'string'
+            ? item.summary.trim().slice(0, 5000)
+            : '';
+
+        const image =
+          typeof item.image === 'string'
+            ? item.image.trim().slice(0, 2048)
+            : '';
+
+        const sourcePublishedAt = normalizeDate(
+          item.sourcePublishedAt || item.publishedAt
+        );
+
+        // Step 8: Queue-তে সংবাদ যোগ
+        await NewsQueue.create({
+          source,
+          sourceUrl,
+          title,
+          summary,
+          category,
+          categoryEn,
+          image,
+          sourcePublishedAt,
+          status: 'pending',
+          nextAttemptAt: new Date(),
+          attempts: 0,
+          lastError: '',
+        });
+
+        addedCount++;
+
+        console.log(`[${category}] Queue-তে যোগ হয়েছে: ${title}`);
+      } catch (error) {
+        // Concurrent Collector অথবা unique index-এর কারণে
+        // একই URL insert হলে duplicate হিসেবে গণ্য হবে।
+        if (error.code === 11000) {
+          skippedCount++;
+          continue;
+        }
+
+        failedCount++;
+
+        console.error(`Queue-তে যোগ করা যায়নি: ${item.title}`, error.message);
+      }
+    }
+
+    // Step 9: Statistics
+    return await getQueueStats({
+      total: totalFetched,
+      addedCount,
+      skippedCount,
+      failedCount,
+    });
+  } catch (error) {
+    console.error('RSS Queue সংগ্রহ ব্যর্থ:', error.message);
+
+    throw error;
+  }
+}
+
+// ========================================
+// 5. Queue Statistics
+// ========================================
+
+async function getQueueStats({
+  total = 0,
+  addedCount = 0,
+  skippedCount = 0,
+  failedCount = 0,
+} = {}) {
   const [
     pendingCount,
-    comillaPendingCount,
-    nationalPendingCount,
-    internationalPendingCount,
+    completedCount,
+    failedQueueCount,
+    processingCount,
+    ...categoryPendingCounts
   ] = await Promise.all([
     NewsQueue.countDocuments({
       status: 'pending',
     }),
 
     NewsQueue.countDocuments({
-      status: 'pending',
-      category: 'কুমিল্লা',
+      status: 'completed',
     }),
 
     NewsQueue.countDocuments({
-      status: 'pending',
-      category: 'জাতীয়',
+      status: 'failed',
     }),
 
     NewsQueue.countDocuments({
-      status: 'pending',
-      category: 'আন্তর্জাতিক',
+      status: 'processing',
     }),
+
+    ...NEWS_CATEGORIES.map((category) =>
+      NewsQueue.countDocuments({
+        status: 'pending',
+        category: category.name,
+      })
+    ),
   ]);
 
-  console.log('\n📊 RSS Queue সংগ্রহ শেষ।');
+  const categoryStats = {};
 
+  NEWS_CATEGORIES.forEach((category, index) => {
+    categoryStats[`${category.key}PendingCount`] = categoryPendingCounts[index];
+  });
+
+  console.log('\nRSS Queue সংগ্রহ শেষ।');
   console.log(`মোট পাওয়া গেছে: ${total}`);
   console.log(`নতুন যোগ হয়েছে: ${addedCount}`);
   console.log(`আগেই ছিল/বাদ: ${skippedCount}`);
-  console.log(`ব্যর্থ: ${failedCount}`);
-  console.log(`মোট অপেক্ষমাণ: ${pendingCount}`);
+  console.log(`সংগ্রহে ব্যর্থ: ${failedCount}`);
+  console.log(`অপেক্ষমাণ: ${pendingCount}`);
+  console.log(`প্রসেস চলছে: ${processingCount}`);
+  console.log(`প্রসেস সম্পন্ন: ${completedCount}`);
+  console.log(`Queue-তে ব্যর্থ: ${failedQueueCount}`);
 
-  console.log(`📍 কুমিল্লা অপেক্ষমাণ: ${comillaPendingCount}`);
-
-  console.log(`🇧🇩 জাতীয় অপেক্ষমাণ: ${nationalPendingCount}`);
-
-  console.log(`🌍 আন্তর্জাতিক অপেক্ষমাণ: ${internationalPendingCount}`);
+  for (const category of NEWS_CATEGORIES) {
+    console.log(
+      `${category.name} অপেক্ষমাণ: ` +
+        `${categoryStats[`${category.key}PendingCount`]}`
+    );
+  }
 
   return {
     total,
@@ -352,11 +468,16 @@ async function getQueueStats({ total, addedCount, skippedCount, failedCount }) {
     skippedCount,
     failedCount,
     pendingCount,
-    comillaPendingCount,
-    nationalPendingCount,
-    internationalPendingCount,
+    processingCount,
+    completedCount,
+    failedQueueCount,
+    ...categoryStats,
   };
 }
+
+// ========================================
+// 6. Exports
+// ========================================
 
 module.exports = {
   collectNewsToQueue,

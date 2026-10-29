@@ -2,17 +2,15 @@ require('dotenv').config();
 
 const mongoose = require('mongoose');
 
-const {
-  importInternationalNews,
-} = require('./services/internationalNewsService');
+const { importAllNews } = require('./services/internationalNewsService');
 
 const MONGO_URI = process.env.MONGODB_URI;
 
-async function testInternationalNews() {
+async function testAutoNews() {
   try {
     if (!MONGO_URI) {
       throw new Error(
-        'MONGO_URI পাওয়া যায়নি। .env ফাইলের MongoDB URI ভেরিয়েবল পরীক্ষা করো।'
+        'MONGODB_URI পাওয়া যায়নি। Backend-এর .env ফাইল পরীক্ষা করুন।'
       );
     }
 
@@ -22,13 +20,18 @@ async function testInternationalNews() {
 
     console.log('✅ MongoDB সংযোগ সফল!');
 
-    await importInternationalNews();
+    const result = await importAllNews();
+
+    console.log('\n📊 Auto News Import-এর ফলাফল:');
+    console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error('❌ পরীক্ষা ব্যর্থ:', error.message);
   } finally {
-    await mongoose.disconnect();
-    console.log('MongoDB সংযোগ বন্ধ করা হয়েছে।');
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+      console.log('MongoDB সংযোগ বন্ধ করা হয়েছে।');
+    }
   }
 }
 
-testInternationalNews();
+testAutoNews();

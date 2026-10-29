@@ -21,11 +21,10 @@ const parser = new Parser({
 // নিচে যাচাই করা Feed URL বসাতে হবে।
 
 const COMILLA_RSS_FEEDS = [
-  // উদাহরণ:
-  // {
-  //   name: 'Local News Source',
-  //   url: 'এখানে-যাচাই-করা-RSS-URL',
-  // },
+  {
+    name: 'Comilla News24',
+    url: 'https://comillanews24.com/feed/',
+  },
 ];
 
 // ========================================
@@ -33,6 +32,10 @@ const COMILLA_RSS_FEEDS = [
 // ========================================
 
 const NATIONAL_RSS_FEEDS = [
+  {
+    name: 'Jago News 24',
+    url: 'https://www.jagonews24.com/rss/rss.xml',
+  },
   {
     name: 'The Daily Star',
     url: 'https://www.thedailystar.net/frontpage/rss.xml',
@@ -46,8 +49,17 @@ const NATIONAL_RSS_FEEDS = [
     url: 'https://www.banglanews24.com/rss/rss.xml',
   },
   {
-    name: 'Jago News 24',
-    url: 'https://www.jagonews24.com/rss/rss.xml',
+    name: 'Jugantor',
+    url: 'https://www.jugantor.com/feed/rss.xml',
+  },
+
+  {
+    name: 'Prothom Alo',
+    url: 'https://www.prothomalo.com/feed/',
+  },
+  {
+    name: 'BD24Live',
+    url: 'https://www.bd24live.com/feed',
   },
 ];
 
@@ -64,6 +76,38 @@ const INTERNATIONAL_RSS_FEEDS = [
   {
     name: 'Al Jazeera',
     url: 'https://www.aljazeera.com/xml/rss/all.xml',
+  },
+];
+
+// ========================================
+// ৪. রাজনীতি, খেলাধুলা, বিনোদন ও প্রযুক্তির Feed
+// ========================================
+
+const POLITICS_RSS_FEEDS = [
+  {
+    name: 'Sun News Politics',
+    url: 'https://www.sunnews24x7.com/feed/politics',
+  },
+];
+
+const SPORTS_RSS_FEEDS = [
+  {
+    name: 'Sun News Sports',
+    url: 'https://www.sunnews24x7.com/feed/sports',
+  },
+];
+
+const ENTERTAINMENT_RSS_FEEDS = [
+  {
+    name: 'Sun News Entertainment',
+    url: 'https://www.sunnews24x7.com/feed/entertainment',
+  },
+];
+
+const TECHNOLOGY_RSS_FEEDS = [
+  {
+    name: 'VKNews24 Technology',
+    url: 'https://vknews24.com/rss/category/technology',
   },
 ];
 
@@ -218,12 +262,11 @@ function cleanText(value) {
 // ৭. একটি Feed থেকে সংবাদ সংগ্রহ
 // ========================================
 
-async function fetchFeedNews(feed, category) {
+async function fetchFeedNews(feed, category, categoryEn) {
   try {
     console.log(`সংবাদ সংগ্রহ হচ্ছে: ${feed.name}`);
 
     const result = await parser.parseURL(feed.url);
-
     const allItems = [];
 
     for (const item of result.items || []) {
@@ -242,7 +285,6 @@ async function fetchFeedNews(feed, category) {
 
       let image = extractImage(item);
 
-      // ছবি না থাকলে মূল প্রতিবেদন পরীক্ষা
       if (!image) {
         image = await fetchArticleImage(sourceUrl);
       }
@@ -255,19 +297,14 @@ async function fetchFeedNews(feed, category) {
         summary,
         sourceUrl,
         image,
+
         sourcePublishedAt:
           publishedDate && !Number.isNaN(publishedDate.getTime())
             ? publishedDate
             : null,
 
         category,
-        categoryEn:
-          category === 'কুমিল্লা'
-            ? 'Comilla'
-            : category === 'জাতীয়'
-              ? 'National'
-              : 'International',
-
+        categoryEn,
         isAutoImported: true,
       });
     }
@@ -277,8 +314,6 @@ async function fetchFeedNews(feed, category) {
     return allItems;
   } catch (error) {
     console.error(`${feed.name} Feed Error:`, error.message);
-
-    // একটি Feed ব্যর্থ হলেও অন্য Feed চলবে
     return [];
   }
 }
@@ -287,9 +322,9 @@ async function fetchFeedNews(feed, category) {
 // ৮. একাধিক Feed থেকে সংবাদ সংগ্রহ
 // ========================================
 
-async function collectFromFeeds(feeds, category) {
+async function collectFromFeeds(feeds, category, categoryEn) {
   const results = await Promise.all(
-    feeds.map((feed) => fetchFeedNews(feed, category))
+    feeds.map((feed) => fetchFeedNews(feed, category, categoryEn))
   );
 
   const uniqueNews = new Map();
@@ -306,7 +341,6 @@ async function collectFromFeeds(feeds, category) {
 
   return Array.from(uniqueNews.values());
 }
-
 // ========================================
 // ৯. কুমিল্লার সংবাদ সংগ্রহ
 // ========================================
@@ -314,32 +348,70 @@ async function collectFromFeeds(feeds, category) {
 async function fetchComillaNews() {
   if (COMILLA_RSS_FEEDS.length === 0) {
     console.warn('কুমিল্লার RSS Feed যোগ করা হয়নি।');
-
     return [];
   }
 
-  return collectFromFeeds(COMILLA_RSS_FEEDS, 'কুমিল্লা');
+  return collectFromFeeds(COMILLA_RSS_FEEDS, 'কুমিল্লা', 'Comilla');
 }
 
 // ========================================
-// ১০. জাতীয় সংবাদ সংগ্রহ
+// জাতীয়
 // ========================================
 
 async function fetchNationalNews() {
-  return collectFromFeeds(NATIONAL_RSS_FEEDS, 'জাতীয়');
+  return collectFromFeeds(NATIONAL_RSS_FEEDS, 'জাতীয়', 'National');
 }
 
 // ========================================
-// ১১. আন্তর্জাতিক সংবাদ সংগ্রহ
-// শুধু BBC World ও Al Jazeera
+// আন্তর্জাতিক
 // ========================================
 
 async function fetchInternationalNews() {
-  return collectFromFeeds(INTERNATIONAL_RSS_FEEDS, 'আন্তর্জাতিক');
+  return collectFromFeeds(
+    INTERNATIONAL_RSS_FEEDS,
+    'আন্তর্জাতিক',
+    'International'
+  );
+}
+
+// ========================================
+// রাজনীতি
+// ========================================
+
+async function fetchPoliticsNews() {
+  return collectFromFeeds(POLITICS_RSS_FEEDS, 'রাজনীতি', 'Politics');
+}
+
+// ========================================
+// খেলাধুলা
+// ========================================
+
+async function fetchSportsNews() {
+  return collectFromFeeds(SPORTS_RSS_FEEDS, 'খেলাধুলা', 'Sports');
+}
+
+// ========================================
+// বিনোদন
+// ========================================
+
+async function fetchEntertainmentNews() {
+  return collectFromFeeds(ENTERTAINMENT_RSS_FEEDS, 'বিনোদন', 'Entertainment');
+}
+
+// ========================================
+// প্রযুক্তি
+// ========================================
+
+async function fetchTechnologyNews() {
+  return collectFromFeeds(TECHNOLOGY_RSS_FEEDS, 'প্রযুক্তি', 'Technology');
 }
 
 module.exports = {
   fetchComillaNews,
   fetchNationalNews,
   fetchInternationalNews,
+  fetchPoliticsNews,
+  fetchSportsNews,
+  fetchEntertainmentNews,
+  fetchTechnologyNews,
 };

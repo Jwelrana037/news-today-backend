@@ -83,6 +83,7 @@ const newsSchema = new mongoose.Schema(
         'খেলাধুলা',
         'প্রযুক্তি',
         'বিনোদন',
+        'ভিডিও',
         'অর্থনীতি',
         'ব্যবসা-বাণিজ্য',
         'শিক্ষা',
@@ -109,13 +110,15 @@ const newsSchema = new mongoose.Schema(
         'Sports',
         'Technology',
         'Entertainment',
+        'Video',
         'Economy',
+        'Business',
         'Education',
         'Crime',
         'Health',
         'Jobs',
         'Religion',
-        'Business',
+        'Environment',
         'Agriculture',
       ],
       default: 'National',
@@ -226,10 +229,32 @@ const newsSchema = new mongoose.Schema(
       index: true,
     },
 
-    // প্রধান সংবাদ
+    // ==========================================
+    // Featured News
+    // ==========================================
+
     isFeatured: {
       type: Boolean,
       default: false,
+      index: true,
+    },
+
+    // ==========================================
+    // Admin News Priority System
+    // ==========================================
+
+    // Admin নিউজকে নির্দিষ্ট সময়ের জন্য সবার আগে দেখানো
+    isPriority: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    // Priority কতক্ষণ কার্যকর থাকবে
+    priorityUntil: {
+      type: Date,
+      default: null,
+      index: true,
     },
   },
   {

@@ -36,6 +36,9 @@ const {
 const {
   getNewsQueueStats,
   collectNewsManually,
+  getNewsQueue,
+  retryNewsQueueItem,
+  deleteNewsQueueItem,
 } = require('../controllers/newsQueueController');
 
 // ========================================
@@ -70,6 +73,16 @@ router.post(
 // ========================================
 // RSS Queue Statistics
 // ========================================
+
+// Queue-এর সব সংবাদ দেখা
+// GET /api/admin/news-queue
+router.get(
+  '/news-queue',
+  protectAdmin,
+  getNewsQueue
+);
+
+
 
 // GET /api/admin/news-queue/stats
 router.get('/news-queue/stats', protectAdmin, getNewsQueueStats);
@@ -152,6 +165,24 @@ router.patch('/advertisements/:id/toggle', protectAdmin, toggleAdvertisement);
 // DELETE /api/admin/advertisements/:id
 router.delete('/advertisements/:id', protectAdmin, deleteAdvertisement);
 
+
+
+
+// Failed সংবাদ Retry
+// PATCH /api/admin/news-queue/:id/retry
+router.patch(
+  '/news-queue/:id/retry',
+  protectAdmin,
+  retryNewsQueueItem
+);
+
+// Queue থেকে সংবাদ মুছে ফেলা
+// DELETE /api/admin/news-queue/:id
+router.delete(
+  '/news-queue/:id',
+  protectAdmin,
+  deleteNewsQueueItem
+);
 // ========================================
 // 7. Export Router
 // ========================================

@@ -128,13 +128,17 @@ function parseGeminiResponse(response) {
     typeof result.titleBn === 'string' ? result.titleBn.trim() : '';
 
   const summaryBn =
-    typeof result.summaryBn === 'string' ? result.summaryBn.trim() : '';
+    typeof result.summaryBn === 'string'
+      ? result.summaryBn.trim().slice(0, 2000)
+      : '';
 
   const titleEn =
     typeof result.titleEn === 'string' ? result.titleEn.trim() : '';
 
   const summaryEn =
-    typeof result.summaryEn === 'string' ? result.summaryEn.trim() : '';
+    typeof result.summaryEn === 'string'
+      ? result.summaryEn.trim().slice(0, 2000)
+      : '';
 
   if (!titleBn || !titleEn) {
     throw new Error('Gemini বাংলা অথবা ইংরেজি শিরোনাম তৈরি করতে পারেনি।');

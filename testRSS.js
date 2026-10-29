@@ -1,10 +1,10 @@
-const { fetchInternationalNews } = require('./services/rssService');
+const { fetchComillaNews } = require('./services/rssService');
 
 async function testRSS() {
   try {
     console.log('RSS পরীক্ষা শুরু হচ্ছে...\n');
 
-    const news = await fetchInternationalNews();
+    const news = await fetchComillaNews();
 
     console.log('\nমোট সংবাদ পাওয়া গেছে:', news.length);
 

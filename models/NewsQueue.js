@@ -35,20 +35,37 @@ const newsQueueSchema = new mongoose.Schema(
       maxlength: 5000,
     },
 
-    // সংবাদ বিভাগ
-    // কুমিল্লা → জাতীয় → আন্তর্জাতিক
+    // বাংলা সংবাদ বিভাগ
     category: {
       type: String,
-      enum: ['কুমিল্লা', 'জাতীয়', 'আন্তর্জাতিক'],
+      enum: [
+        'কুমিল্লা',
+        'জাতীয়',
+        'রাজনীতি',
+        'আন্তর্জাতিক',
+        'খেলাধুলা',
+        'বিনোদন',
+        'প্রযুক্তি',
+        'ভিডিও',
+      ],
       required: true,
       default: 'আন্তর্জাতিক',
       index: true,
     },
 
-    // ইংরেজি বিভাগ
+    // ইংরেজি সংবাদ বিভাগ
     categoryEn: {
       type: String,
-      enum: ['Comilla', 'National', 'International'],
+      enum: [
+        'Comilla',
+        'National',
+        'Politics',
+        'International',
+        'Sports',
+        'Entertainment',
+        'Technology',
+        'Video',
+      ],
       required: true,
       default: 'International',
     },
@@ -80,8 +97,15 @@ const newsQueueSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+      validate: {
+        validator: Number.isInteger,
+        message: 'Attempts অবশ্যই পূর্ণসংখ্যা হতে হবে।',
+      },
     },
-
+    processingStartedAt: {
+      type: Date,
+      default: null,
+    },
     // পরবর্তীবার কখন চেষ্টা করা যাবে
     nextAttemptAt: {
       type: Date,
@@ -101,17 +125,23 @@ const newsQueueSchema = new mongoose.Schema(
   }
 );
 
-// Pending Queue দ্রুত খুঁজে পেতে
+// ============================================
+// Indexes
+// ============================================
+
+// Pending Queue দ্রুত খুঁজতে
 newsQueueSchema.index({
   status: 1,
   nextAttemptAt: 1,
 });
 
-// বিভাগ অনুযায়ী Queue খুঁজতে
+// Category এবং status অনুযায়ী Queue খুঁজতে
 newsQueueSchema.index({
   category: 1,
   status: 1,
-  createdAt: -1,
+  createdAt: 1,
 });
+
+// sourceUrl-এর unique index Schema-তে unique: true থেকে তৈরি হবে।
 
 module.exports = mongoose.model('NewsQueue', newsQueueSchema);

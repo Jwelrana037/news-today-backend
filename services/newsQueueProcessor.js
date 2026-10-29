@@ -5,6 +5,7 @@ const NewsSettings = require('../models/NewsSettings');
 const { translateInternationalNews } = require('./geminiService');
 
 let isProcessing = false;
+let isRecovering = false;
 let geminiQuotaBlockedUntil = 0;
 
 const QUOTA_WAIT_HOURS = Math.max(
@@ -13,115 +14,235 @@ const QUOTA_WAIT_HOURS = Math.max(
 );
 
 const MAX_ATTEMPTS = 5;
+const QUEUE_BATCH_SIZE = 200;
+
+// ৩০ মিনিটের বেশি Processing হলে Recovery বিবেচনা করা হবে।
+const STUCK_PROCESSING_MINUTES = 30;
 
 // ============================================
-// Retry Delay
+// 1. Retry Delay
 // ============================================
 
 function getRetryDelayMinutes(attempts) {
-  return Math.min(2 ** attempts, 60);
+  return Math.min(2 ** Math.max(1, attempts), 60);
 }
 
 // ============================================
-// Check Gemini Quota Error
+// 2. Error Helpers
 // ============================================
 
-function isGeminiQuotaError(message) {
-  return /GEMINI_QUOTA_EXCEEDED|429|RESOURCE_EXHAUSTED|quota exceeded|rate.?limit/i.test(
-    message
+function getErrorMessage(error) {
+  return String(error?.message || error || 'Unknown error').slice(0, 2000);
+}
+
+function isGeminiQuotaError(error) {
+  const message = getErrorMessage(error);
+
+  return (
+    /GEMINI_QUOTA_EXCEEDED|RESOURCE_EXHAUSTED|quota exceeded|rate.?limit/i.test(
+      message
+    ) ||
+    error?.status === 429 ||
+    error?.statusCode === 429 ||
+    error?.code === 429
+  );
+}
+
+// স্থায়ী Data Validation Error-এ Retry প্রয়োজন নেই।
+function isPermanentError(error) {
+  const message = getErrorMessage(error);
+
+  return (
+    error?.name === 'ValidationError' ||
+    error?.name === 'CastError' ||
+    /Queue item-এ বৈধ title নেই|Queue item-এ sourceUrl নেই|অজানা Category|বাংলা শিরোনাম তৈরি হয়নি|ইংরেজি শিরোনাম পাওয়া যায়নি/i.test(
+      message
+    )
   );
 }
 
 // ============================================
-// Category Priority
-// কুমিল্লা → জাতীয় → আন্তর্জাতিক
+// 3. Category Priority
 // ============================================
 
 function getCategoryPriority(category) {
   const priorities = {
     কুমিল্লা: 1,
     জাতীয়: 2,
-    আন্তর্জাতিক: 3,
+    রাজনীতি: 3,
+    আন্তর্জাতিক: 4,
+    খেলাধুলা: 5,
+    বিনোদন: 6,
+    প্রযুক্তি: 7,
+    ভিডিও: 8,
   };
 
-  return priorities[category] || 99;
+  return priorities[category] ?? 99;
+}
+
+const VALID_CATEGORIES = [
+  'কুমিল্লা',
+  'জাতীয়',
+  'রাজনীতি',
+  'আন্তর্জাতিক',
+  'খেলাধুলা',
+  'বিনোদন',
+  'প্রযুক্তি',
+  'ভিডিও',
+];
+
+// ============================================
+// 4. Enabled Categories
+// ============================================
+
+function getEnabledCategories(settings) {
+  const categories = [
+    ['comillaEnabled', 'কুমিল্লা'],
+    ['nationalEnabled', 'জাতীয়'],
+    ['politicsEnabled', 'রাজনীতি'],
+    ['internationalEnabled', 'আন্তর্জাতিক'],
+    ['sportsEnabled', 'খেলাধুলা'],
+    ['entertainmentEnabled', 'বিনোদন'],
+    ['technologyEnabled', 'প্রযুক্তি'],
+    ['videoEnabled', 'ভিডিও'],
+  ];
+
+  return categories
+    .filter(([setting]) => settings[setting] !== false)
+    .map(([, category]) => category);
 }
 
 // ============================================
-// Process News Queue
+// 5. English Category Mapping
+// ============================================
+
+function getCategoryEnglish(category, categoryEn) {
+  if (typeof categoryEn === 'string' && categoryEn.trim()) {
+    return categoryEn.trim();
+  }
+
+  const categoryMap = {
+    কুমিল্লা: 'Comilla',
+    জাতীয়: 'National',
+    রাজনীতি: 'Politics',
+    আন্তর্জাতিক: 'International',
+    খেলাধুলা: 'Sports',
+    বিনোদন: 'Entertainment',
+    প্রযুক্তি: 'Technology',
+    ভিডিও: 'Video',
+  };
+
+  return categoryMap[category] || 'International';
+}
+
+// ============================================
+// 6. Recover Stuck Queue Items
+// ============================================
+
+async function recoverStuckQueueItems() {
+  // একই process-এ একাধিক Recovery চালানো বন্ধ।
+  if (isRecovering) {
+    return 0;
+  }
+
+  isRecovering = true;
+
+  try {
+    const recoveryDeadline = new Date(
+      Date.now() - STUCK_PROCESSING_MINUTES * 60 * 1000
+    );
+
+    const result = await NewsQueue.updateMany(
+      {
+        status: 'processing',
+        processingStartedAt: {
+          $ne: null,
+          $lt: recoveryDeadline,
+        },
+      },
+      {
+        $set: {
+          status: 'pending',
+          processingStartedAt: null,
+          nextAttemptAt: new Date(),
+          lastError: 'Processing timeout; item recovered for retry.',
+        },
+      }
+    );
+
+    if (result.modifiedCount > 0) {
+      console.log(
+        `${result.modifiedCount}টি আটকে থাকা Queue item পুনরায় Pending করা হয়েছে।`
+      );
+    }
+
+    return result.modifiedCount;
+  } catch (error) {
+    console.error('Queue Recovery Error:', getErrorMessage(error));
+    throw error;
+  } finally {
+    isRecovering = false;
+  }
+}
+
+// ============================================
+// 7. Process News Queue
 // ============================================
 
 async function processNewsQueue() {
-  // একই process-এ একাধিক Queue Processing বন্ধ
   if (isProcessing) {
     return;
   }
 
-  // Gemini quota শেষ হলে নির্দিষ্ট সময় অপেক্ষা
   if (Date.now() < geminiQuotaBlockedUntil) {
-    console.log('⏸️ Gemini quota শেষ। অপেক্ষা চলছে।');
+    console.log('Gemini quota wait চলছে।');
     return;
   }
 
-  // গুরুত্বপূর্ণ: Processing শুরু হলে true করতে হবে
   isProcessing = true;
 
   let currentItem = null;
 
   try {
-    // ========================================
+    // ----------------------------------------
     // Step 1: Read Settings
-    // ========================================
+    // ----------------------------------------
 
     const settings = await NewsSettings.findOne({
       key: 'autoNews',
     }).lean();
 
     if (!settings || settings.enabled !== true) {
-      console.log('⏸️ Auto News বন্ধ অথবা Settings তৈরি হয়নি।');
       return;
     }
 
-    // ========================================
+    // ----------------------------------------
     // Step 2: Enabled Categories
-    // ========================================
+    // ----------------------------------------
 
-    const enabledCategories = [];
-
-    if (settings.comillaEnabled !== false) {
-      enabledCategories.push('কুমিল্লা');
-    }
-
-    if (settings.nationalEnabled === true) {
-      enabledCategories.push('জাতীয়');
-    }
-
-    if (settings.internationalEnabled === true) {
-      enabledCategories.push('আন্তর্জাতিক');
-    }
+    const enabledCategories = getEnabledCategories(settings);
 
     if (enabledCategories.length === 0) {
-      console.log('⏸️ সব News Category বন্ধ।');
+      console.log('কোনো News Category চালু নেই।');
       return;
     }
 
-    // ========================================
-    // Step 3: Find Pending Queue Items
-    // ========================================
+    // ----------------------------------------
+    // Step 3: Find Pending Items
+    // ----------------------------------------
 
-    // প্রথমে কুমিল্লা, তারপর জাতীয়, তারপর আন্তর্জাতিক
-    // একই Priority-তে পুরোনো সংবাদ আগে
+    const now = new Date();
+
     const pendingItems = await NewsQueue.find({
       status: 'pending',
-      nextAttemptAt: { $lte: new Date() },
+      nextAttemptAt: { $lte: now },
       category: { $in: enabledCategories },
     })
-      .sort({ createdAt: 1 })
-      .limit(50)
+      .sort({ createdAt: 1, _id: 1 })
+      .limit(QUEUE_BATCH_SIZE)
       .lean();
 
-    if (!pendingItems.length) {
-      console.log('📭 প্রসেস করার মতো সংবাদ নেই।');
+    if (pendingItems.length === 0) {
       return;
     }
 
@@ -133,21 +254,25 @@ async function processNewsQueue() {
         return priorityDifference;
       }
 
-      return new Date(a.createdAt) - new Date(b.createdAt);
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
 
-    // Queue Item-টি atomic update দিয়ে claim করা
-    // অন্য process একই item claim করে ফেললে পরের item চেষ্টা হবে
+    // ----------------------------------------
+    // Step 4: Atomically Claim One Item
+    // ----------------------------------------
+
     for (const item of pendingItems) {
       currentItem = await NewsQueue.findOneAndUpdate(
         {
           _id: item._id,
           status: 'pending',
           nextAttemptAt: { $lte: new Date() },
+          category: { $in: enabledCategories },
         },
         {
           $set: {
             status: 'processing',
+            processingStartedAt: new Date(),
           },
           $inc: {
             attempts: 1,
@@ -155,6 +280,7 @@ async function processNewsQueue() {
         },
         {
           returnDocument: 'after',
+          runValidators: true,
         }
       );
 
@@ -164,32 +290,39 @@ async function processNewsQueue() {
     }
 
     if (!currentItem) {
-      console.log('📭 Queue Item অন্য process নিয়ে নিয়েছে।');
       return;
     }
 
-    console.log(
-      `📰 [${currentItem.category}] প্রসেস হচ্ছে: ${currentItem.title}`
-    );
+    console.log(`[${currentItem.category}] Processing: ${currentItem.title}`);
 
-    // ========================================
-    // Step 4: Validate Queue Data
-    // ========================================
+    // ----------------------------------------
+    // Step 5: Validate Queue Data
+    // ----------------------------------------
 
     if (typeof currentItem.title !== 'string' || !currentItem.title.trim()) {
-      throw new Error('Queue সংবাদে বৈধ শিরোনাম নেই।');
+      const error = new Error('Queue item-এ বৈধ title নেই।');
+      error.permanent = true;
+      throw error;
     }
 
     if (
       typeof currentItem.sourceUrl !== 'string' ||
       !currentItem.sourceUrl.trim()
     ) {
-      throw new Error('Queue সংবাদে sourceUrl নেই।');
+      const error = new Error('Queue item-এ sourceUrl নেই।');
+      error.permanent = true;
+      throw error;
     }
 
-    // ========================================
-    // Step 5: Check Existing News
-    // ========================================
+    if (!VALID_CATEGORIES.includes(currentItem.category)) {
+      const error = new Error(`অজানা Category: ${currentItem.category}`);
+      error.permanent = true;
+      throw error;
+    }
+
+    // ----------------------------------------
+    // Step 6: Check Existing News
+    // ----------------------------------------
 
     const existingNews = await News.findOne({
       sourceUrl: currentItem.sourceUrl,
@@ -202,17 +335,18 @@ async function processNewsQueue() {
       }
 
       currentItem.status = 'completed';
+      currentItem.processingStartedAt = null;
       currentItem.lastError = '';
 
       await currentItem.save();
 
-      console.log('⏭️ সংবাদটি আগে থেকেই সংরক্ষিত।');
+      console.log('সংবাদটি আগে থেকেই News Collection-এ আছে।');
       return;
     }
 
-    // ========================================
-    // Step 6: Translate News
-    // ========================================
+    // ----------------------------------------
+    // Step 7: Translate News
+    // ----------------------------------------
 
     const translated = await translateInternationalNews({
       title: currentItem.title,
@@ -221,216 +355,213 @@ async function processNewsQueue() {
     });
 
     if (!translated || typeof translated !== 'object') {
-      throw new Error('Gemini থেকে বৈধ অনুবাদ পাওয়া যায়নি।');
+      throw new Error('Gemini থেকে বৈধ translation পাওয়া যায়নি।');
     }
 
     const bengaliTitle =
-      typeof translated.titleBn === 'string' ? translated.titleBn.trim() : '';
+      typeof translated.titleBn === 'string'
+        ? translated.titleBn.trim().slice(0, 200)
+        : '';
 
     const englishTitle =
       typeof translated.titleEn === 'string'
-        ? translated.titleEn.trim()
-        : currentItem.title.trim();
+        ? translated.titleEn.trim().slice(0, 200)
+        : '';
 
     const bengaliSummary =
       typeof translated.summaryBn === 'string'
-        ? translated.summaryBn.trim()
+        ? translated.summaryBn.trim().slice(0, 2000)
         : '';
 
     const englishSummary =
       typeof translated.summaryEn === 'string'
-        ? translated.summaryEn.trim()
+        ? translated.summaryEn.trim().slice(0, 2000)
         : typeof translated.descriptionEn === 'string'
-          ? translated.descriptionEn.trim()
-          : currentItem.summary || '';
+          ? translated.descriptionEn.trim().slice(0, 2000)
+          : '';
 
     if (!bengaliTitle) {
-      throw new Error('বাংলা শিরোনাম তৈরি হয়নি।');
+      const error = new Error('বাংলা শিরোনাম তৈরি হয়নি।');
+      error.permanent = true;
+      throw error;
     }
 
     if (!englishTitle) {
-      throw new Error('ইংরেজি শিরোনাম পাওয়া যায়নি।');
+      const error = new Error('ইংরেজি শিরোনাম পাওয়া যায়নি।');
+      error.permanent = true;
+      throw error;
     }
 
-    // ========================================
-    // Step 7: Category Mapping
-    // ========================================
+    // ----------------------------------------
+    // Step 8: Prepare Category and Content
+    // ----------------------------------------
 
-    const category = currentItem.category || 'আন্তর্জাতিক';
+    const category = currentItem.category;
 
-    const categoryMap = {
-      কুমিল্লা: 'Comilla',
-      জাতীয়: 'National',
-      আন্তর্জাতিক: 'International',
-    };
+    const categoryEn = getCategoryEnglish(category, currentItem.categoryEn);
 
-    const categoryEn =
-      currentItem.categoryEn || categoryMap[category] || 'International';
+    const source = currentItem.source || 'RSS';
 
-    // ========================================
-    // Step 8: Review or Auto Publish
-    // ========================================
+    const bengaliContent = [
+      bengaliTitle,
+      bengaliSummary,
+      `মূল সংবাদসূত্র: ${source}`,
+      `মূল প্রতিবেদন: ${currentItem.sourceUrl}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const englishContent = [
+      englishTitle,
+      englishSummary,
+      `Original source: ${source}`,
+      `Original report: ${currentItem.sourceUrl}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    // ----------------------------------------
+    // Step 9: Review or Auto Publish
+    // ----------------------------------------
 
     const reviewMode = settings.mode !== 'auto';
 
     const newsData = {
-      // বাংলা
       title: bengaliTitle,
-
       description: (bengaliSummary || bengaliTitle).slice(0, 2000),
+      content: bengaliContent,
 
-      content: [
-        bengaliTitle,
-        bengaliSummary,
-        `মূল সংবাদসূত্র: ${currentItem.source || 'RSS'}`,
-        `মূল প্রতিবেদন: ${currentItem.sourceUrl}`,
-      ]
-        .filter(Boolean)
-        .join('\n\n'),
-
-      // English
       titleEn: englishTitle,
-
       descriptionEn: (englishSummary || englishTitle).slice(0, 2000),
+      contentEn: englishContent,
 
-      contentEn: [
-        englishTitle,
-        englishSummary,
-        `Original source: ${currentItem.source || 'RSS'}`,
-        `Original report: ${currentItem.sourceUrl}`,
-      ]
-        .filter(Boolean)
-        .join('\n\n'),
-
-      // Category
       category,
       categoryEn,
 
-      // Source
-      source: currentItem.source || 'RSS',
+      source,
       sourceUrl: currentItem.sourceUrl,
       sourcePublishedAt: currentItem.sourcePublishedAt || null,
 
-      // Image
       image: currentItem.image || '',
 
-      // Author
-      author: `${currentItem.source || 'RSS'} / Automated News`,
+      author: `${source} / Automated News`.slice(0, 200),
 
-      // Review Mode = Draft
-      // Auto Mode = Published
       status: reviewMode ? 'draft' : 'published',
-
       isReviewed: false,
       isAutoImported: true,
       isFeatured: false,
     };
 
-    // ========================================
-    // Step 9: Save News
-    // ========================================
+    // ----------------------------------------
+    // Step 10: Save News
+    // ----------------------------------------
 
     await News.create(newsData);
 
-    // ========================================
-    // Step 10: Mark Queue Completed
-    // ========================================
+    // ----------------------------------------
+    // Step 11: Mark Queue Completed
+    // ----------------------------------------
 
     currentItem.status = 'completed';
+    currentItem.processingStartedAt = null;
     currentItem.lastError = '';
 
     await currentItem.save();
 
     if (reviewMode) {
-      console.log(`📝 Review-এর জন্য Draft তৈরি হয়েছে: ${bengaliTitle}`);
+      console.log(`Review-এর জন্য Draft তৈরি হয়েছে: ${bengaliTitle}`);
     } else {
-      console.log(`✅ সংবাদ প্রকাশিত: ${bengaliTitle}`);
+      console.log(`সংবাদ Publish হয়েছে: ${bengaliTitle}`);
     }
   } catch (error) {
-    const message = String(error.message || error);
+    const message = getErrorMessage(error);
 
-    console.error('❌ Queue Processing Error:', message);
+    console.error('Queue Processing Error:', message);
 
-    if (currentItem) {
-      currentItem.lastError = message.slice(0, 2000);
+    if (!currentItem) {
+      return;
+    }
 
-      // ======================================
-      // Step 11: Duplicate Key Error
-      // ======================================
+    currentItem.lastError = message;
+    currentItem.processingStartedAt = null;
 
-      if (error.code === 11000) {
-        currentItem.status = 'completed';
-        currentItem.lastError = '';
+    // ----------------------------------------
+    // Step 12: Duplicate Key Error
+    // ----------------------------------------
 
-        try {
-          await currentItem.save();
-          console.log('⏭️ Duplicate সংবাদ বাদ দেওয়া হয়েছে।');
-        } catch (saveError) {
-          console.error(
-            '❌ Duplicate Queue সংরক্ষণ ব্যর্থ:',
-            saveError.message
-          );
-        }
-
-        return;
-      }
-
-      // ======================================
-      // Step 12: Gemini Quota Error
-      // ======================================
-
-      if (isGeminiQuotaError(message)) {
-        geminiQuotaBlockedUntil =
-          Date.now() + QUOTA_WAIT_HOURS * 60 * 60 * 1000;
-
-        currentItem.status = 'pending';
-
-        currentItem.nextAttemptAt = new Date(geminiQuotaBlockedUntil);
-
-        console.error(
-          `⏸️ Gemini quota/rate limit সমস্যা। ` +
-            `${QUOTA_WAIT_HOURS} ঘণ্টা পরে আবার চেষ্টা হবে।`
-        );
-      } else if (currentItem.attempts < MAX_ATTEMPTS) {
-        // ====================================
-        // Step 13: Retry Temporary Errors
-        // ====================================
-
-        currentItem.status = 'pending';
-
-        const delayMinutes = getRetryDelayMinutes(currentItem.attempts);
-
-        currentItem.nextAttemptAt = new Date(
-          Date.now() + delayMinutes * 60 * 1000
-        );
-
-        console.error(`⚠️ ${delayMinutes} মিনিট পরে আবার চেষ্টা হবে।`);
-      } else {
-        // ====================================
-        // Step 14: Maximum Attempts Reached
-        // ====================================
-
-        currentItem.status = 'failed';
-
-        console.error('❌ সর্বোচ্চ চেষ্টা শেষ। সংবাদটি Failed হয়েছে।');
-      }
+    if (error.code === 11000) {
+      currentItem.status = 'completed';
+      currentItem.lastError = '';
 
       try {
         await currentItem.save();
+        console.log('Duplicate সংবাদ বাদ দেওয়া হয়েছে।');
       } catch (saveError) {
-        console.error('❌ Queue সংরক্ষণ ব্যর্থ:', saveError.message);
+        console.error(
+          'Duplicate Queue update ব্যর্থ:',
+          getErrorMessage(saveError)
+        );
       }
+
+      return;
+    }
+
+    // ----------------------------------------
+    // Step 13: Gemini Quota Error
+    // ----------------------------------------
+
+    if (isGeminiQuotaError(error)) {
+      geminiQuotaBlockedUntil = Date.now() + QUOTA_WAIT_HOURS * 60 * 60 * 1000;
+
+      currentItem.status = 'pending';
+      currentItem.nextAttemptAt = new Date(geminiQuotaBlockedUntil);
+
+      console.error(
+        `Gemini quota/rate limit error। ${QUOTA_WAIT_HOURS} ঘণ্টা পরে retry হবে।`
+      );
+    } else if (error.permanent || isPermanentError(error)) {
+      currentItem.status = 'failed';
+
+      console.error('স্থায়ী Data Error। স্বয়ংক্রিয় Retry করা হবে না।');
+    } else if (currentItem.attempts < MAX_ATTEMPTS) {
+      // --------------------------------------
+      // Step 14: Retry Temporary Errors
+      // --------------------------------------
+
+      currentItem.status = 'pending';
+
+      const delayMinutes = getRetryDelayMinutes(currentItem.attempts);
+
+      currentItem.nextAttemptAt = new Date(
+        Date.now() + delayMinutes * 60 * 1000
+      );
+
+      console.error(`${delayMinutes} মিনিট পরে retry হবে।`);
+    } else {
+      // --------------------------------------
+      // Step 15: Maximum Attempts Reached
+      // --------------------------------------
+
+      currentItem.status = 'failed';
+
+      console.error('সর্বোচ্চ retry শেষ। Queue item failed।');
+    }
+
+    try {
+      await currentItem.save();
+    } catch (saveError) {
+      console.error('Queue status সংরক্ষণ ব্যর্থ:', getErrorMessage(saveError));
     }
   } finally {
-    // সব অবস্থায় Processing Lock মুক্ত হবে
     isProcessing = false;
   }
 }
 
 // ============================================
-// Export
+// 8. Export
 // ============================================
 
 module.exports = {
   processNewsQueue,
+  recoverStuckQueueItems,
 };
